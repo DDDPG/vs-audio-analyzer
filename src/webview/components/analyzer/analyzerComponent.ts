@@ -29,6 +29,11 @@ export default class AnalyzerComponent extends Component {
   private _playerService: PlayerService;
   private _loudnessService: LoudnessService | undefined;
 
+  /** Mid/side path uses a dedicated buffer + {@link AnalyzeService}; released on re-render and dispose. */
+  private _midSideDerived:
+    | { analyzeService: AnalyzeService; audioBuffer: AudioBuffer }
+    | undefined;
+
   private _analyzeResultBox: HTMLElement;
 
   constructor(
@@ -68,6 +73,19 @@ export default class AnalyzerComponent extends Component {
     );
 
     this._analyzeService.analyze();
+  }
+
+  public dispose(): void {
+    this._disposeMidSideDerived();
+    super.dispose();
+  }
+
+  private _disposeMidSideDerived(): void {
+    if (!this._midSideDerived) {
+      return;
+    }
+    this._midSideDerived.analyzeService.dispose();
+    this._midSideDerived = undefined;
   }
 
   private clearAnalyzeResult() {
@@ -117,11 +135,13 @@ export default class AnalyzerComponent extends Component {
     const data = mode === "m" ? mid : side;
     const audioBuffer = this._createMonoBuffer(data);
     const analyzeService = new AnalyzeService(audioBuffer);
+    this._midSideDerived = { analyzeService, audioBuffer };
     return [{ analyzeService, audioBuffer, ch: 0, numOfCh: 1 }];
   }
 
   private renderAnalyzeResult() {
     this.clearAnalyzeResult();
+    this._disposeMidSideDerived();
 
     const settings = this._analyzeSettingsService.toProps();
     const displayChannels = this._displayChannels();

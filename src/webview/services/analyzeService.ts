@@ -61,6 +61,24 @@ export default class AnalyzeService extends Service {
     this._audioBuffer = audioBuffer;
   }
 
+  public dispose(): void {
+    const ess = this._essentia;
+    if (ess) {
+      try {
+        ess.shutdown();
+      } catch {
+        /* ignore */
+      }
+      try {
+        ess.delete();
+      } catch {
+        /* ignore */
+      }
+      this._essentia = null;
+    }
+    super.dispose();
+  }
+
   public async initEssentia(): Promise<void> {
     if (this._essentia) {
       return;

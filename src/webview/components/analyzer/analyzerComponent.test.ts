@@ -253,3 +253,67 @@ describe("position of seek-bar should be updated when recieving update-seekbar e
     expect(visibleSeekbar.style.width).toBe("100%");
   });
 });
+
+describe("analyzerComponent mid/side derived AnalyzeService", () => {
+  test("disposes previous derived service when ANALYZE runs again in mid mode", () => {
+    document.body.innerHTML = '<div id="analyzer-ms"></div>';
+    const disposeSpy = jest.spyOn(AnalyzeService.prototype, "dispose");
+    const audioContext = createAudioContext(44100);
+    const audioBuffer = audioContext.createBuffer(2, 8000, 44100);
+    const ad = {
+      waveformVisible: undefined,
+      waveformVerticalScale: undefined,
+      spectrogramVisible: undefined,
+      spectrogramVerticalScale: undefined,
+      windowSizeIndex: undefined,
+      minAmplitude: undefined,
+      maxAmplitude: undefined,
+      minFrequency: undefined,
+      maxFrequency: undefined,
+      spectrogramAmplitudeRange: undefined,
+      frequencyScale: undefined,
+      melFilterNum: undefined,
+    };
+    const analyzeService = new AnalyzeService(audioBuffer);
+    const analyzeSettingsService = AnalyzeSettingsService.fromDefaultSetting(
+      ad,
+      audioBuffer,
+    );
+    analyzeSettingsService.liveMonitoringMode = "m";
+    const pd = {
+      volumeUnitDb: true,
+      initialVolumeDb: 0.0,
+      initialVolume: 1.0,
+      enableSpacekeyPlay: true,
+      enableSeekToPlay: true,
+      enableHpf: false,
+      hpfFrequency: PlayerSettingsService.FILTER_FREQUENCY_HPF_DEFAULT,
+      enableLpf: false,
+      lpfFrequency: PlayerSettingsService.FILTER_FREQUENCY_LPF_DEFAULT,
+      matchFilterFrequencyToSpectrogram: false,
+    };
+    const playerSettingsService = PlayerSettingsService.fromDefaultSetting(
+      pd,
+      audioBuffer,
+    );
+    const playerService = new PlayerService(
+      audioContext,
+      audioBuffer,
+      playerSettingsService,
+      analyzeSettingsService,
+    );
+    const ac = new AnalyzerComponent(
+      "#analyzer-ms",
+      audioBuffer,
+      analyzeService,
+      analyzeSettingsService,
+      playerService,
+    );
+    const afterMount = disposeSpy.mock.calls.length;
+    analyzeService.analyze();
+    expect(disposeSpy.mock.calls.length).toBeGreaterThan(afterMount);
+    ac.dispose();
+    playerService.dispose();
+    disposeSpy.mockRestore();
+  });
+});
