@@ -24,6 +24,9 @@ import LevelMeterComponent from "../liveMeters/levelMeterComponent";
 import LiveAnalysisComponent from "../liveMeters/liveAnalysisComponent";
 import LiveMonitoringBarComponent from "../liveMeters/liveMonitoringBarComponent";
 import WaveBandComponent from "../waveBand/waveBandComponent";
+import LoudnessComponent from "../loudness/loudnessComponent";
+import LoudnessService from "../../services/loudnessService";
+import { setLoudnessWorkletModuleUrl } from "../../utils/loudnessWorkletLoader";
 import { setActiveWorkspacePane } from "../../workspacePane";
 
 type CreateAudioContext = (sampleRate: number) => AudioContext;
@@ -118,6 +121,14 @@ export default class WebView extends Component {
               aria-controls="deckEdit"
               id="tabEdit"
             >Edit &amp; Export</button>
+            <button
+              type="button"
+              class="workspacePane__tab js-paneSelect-loudness"
+              role="tab"
+              aria-selected="false"
+              aria-controls="deckLoudness"
+              id="tabLoudness"
+            >Loudness</button>
           </div>
         </div>
       </div>
@@ -161,8 +172,20 @@ export default class WebView extends Component {
                 <p class="workspacePane__placeholder">Cut and spectrum export — coming soon.</p>
               </div>
             </div>
+            <div
+              id="deckLoudness"
+              class="graphDeck__pane graphDeck__pane--loudness"
+              role="tabpanel"
+              aria-labelledby="tabLoudness"
+              hidden
+            >
+              <div class="graphDeck__body">
+                <div id="loudnessGraphMount" class="graphDeck__graph workspacePane__graph" hidden></div>
+              </div>
+            </div>
           </div>
         </div>
+        <div id="meterColumnResizeHandle" class="meterColumnResizeHandle" title="Drag to resize level meter width" aria-hidden="true"></div>
         <div id="liveMetersRight"></div>
       </div>
       <div id="settingsDock" class="settingsDock">
@@ -360,6 +383,9 @@ export default class WebView extends Component {
         if (ExtMessageType.isCONFIG(msg)) {
           this._config = msg.data;
           this._fileExt = msg.data.fileExt ?? "";
+          if (msg.data.loudnessWorkletUri) {
+            setLoudnessWorkletModuleUrl(msg.data.loudnessWorkletUri);
+          }
           console.log(msg.data);
           this._postMessage({
             type: WebviewMessageType.DATA,
@@ -468,6 +494,7 @@ export default class WebView extends Component {
     );
 
     const analyzeService = new AnalyzeService(audioBuffer);
+    const loudnessService = new LoudnessService(audioBuffer);
     const analyzeSettingsService = AnalyzeSettingsService.fromDefaultSetting(
       this._config.analyzeDefault,
       audioBuffer,
@@ -495,6 +522,7 @@ export default class WebView extends Component {
       analyzeSettingsService,
       playerService,
       analyzeService,
+      loudnessService,
     );
     this._disposables.push(waveBandComponent);
 
@@ -532,6 +560,9 @@ export default class WebView extends Component {
 
     // Wire level meter, monitoring bar, workspace panes (lazy STFT / Live).
     const mainVisualizer = document.getElementById("mainVisualizer") as HTMLElement;
+    const meterColumnResizeHandle = document.getElementById(
+      "meterColumnResizeHandle",
+    ) as HTMLElement;
     const liveMetersRight = document.getElementById("liveMetersRight") as HTMLElement;
 
     const levelMeterComponent = new LevelMeterComponent(
@@ -545,11 +576,17 @@ export default class WebView extends Component {
     );
     this._disposables.push(levelMeterComponent, liveMonitoringBarComponent);
 
+    let meterColumnWidthPx = 112;
+    const clampMeterColumnWidth = (width: number) =>
+      Math.max(72, Math.min(220, width));
     const updateMeterColumn = () => {
       mainVisualizer.style.setProperty(
         "--meter-col-width",
-        analyzeSettingsService.showLevelMeter ? "112px" : "0px",
+        analyzeSettingsService.showLevelMeter ? `${meterColumnWidthPx}px` : "0px",
       );
+      if (meterColumnResizeHandle) {
+        meterColumnResizeHandle.hidden = !analyzeSettingsService.showLevelMeter;
+      }
     };
     this._addEventlistener(
       analyzeSettingsService,
@@ -557,6 +594,28 @@ export default class WebView extends Component {
       updateMeterColumn,
     );
     updateMeterColumn();
+
+    this._addEventlistener(
+      meterColumnResizeHandle,
+      EventType.MOUSE_DOWN,
+      (e: MouseEvent) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = meterColumnWidthPx;
+        const move = (ev: MouseEvent) => {
+          meterColumnWidthPx = clampMeterColumnWidth(
+            startWidth + (startX - ev.clientX),
+          );
+          updateMeterColumn();
+        };
+        const up = () => {
+          document.removeEventListener("mousemove", move);
+          document.removeEventListener("mouseup", up);
+        };
+        document.addEventListener("mousemove", move);
+        document.addEventListener("mouseup", up);
+      },
+    );
 
     if (typeof ResizeObserver !== "undefined") {
       const resizeObserver = new ResizeObserver(() => updateMeterColumn());
@@ -583,6 +642,7 @@ export default class WebView extends Component {
         analyzeService,
         analyzeSettingsService,
         playerService,
+        loudnessService,
       );
       this._disposables.push(stftAnalyzer);
     };
@@ -606,9 +666,28 @@ export default class WebView extends Component {
       updateMeterColumn();
     };
 
+    let loudnessComponent: LoudnessComponent | undefined;
+    const loudnessGraphMount = document.getElementById(
+      "loudnessGraphMount",
+    ) as HTMLElement | null;
+    const ensureLoudnessMounted = async () => {
+      if (loudnessComponent || !loudnessGraphMount) {
+        return;
+      }
+      loudnessGraphMount.removeAttribute("hidden");
+      loudnessComponent = new LoudnessComponent(
+        loudnessGraphMount,
+        loudnessService,
+        playerService,
+        analyzeSettingsService,
+        audioBuffer,
+      );
+      this._disposables.push(loudnessComponent);
+    };
+
     const wirePaneSelect = (
       sel: string,
-      pane: "stft" | "liveSpec" | "edit",
+      pane: "stft" | "liveSpec" | "edit" | "loudness",
       onSelect?: () => void | Promise<void>,
     ) => {
       const btn = document.querySelector(sel) as HTMLButtonElement | null;
@@ -625,6 +704,7 @@ export default class WebView extends Component {
     wirePaneSelect(".js-paneSelect-stft", "stft", ensureStftMounted);
     wirePaneSelect(".js-paneSelect-liveSpec", "liveSpec", ensureLiveMounted);
     wirePaneSelect(".js-paneSelect-edit", "edit");
+    wirePaneSelect(".js-paneSelect-loudness", "loudness", ensureLoudnessMounted);
 
     this._addEventlistener(document, EventType.WORKSPACE_ACTIVE_PANE, ((ev: Event) => {
       const e = ev as CustomEvent<{ pane: string }>;
@@ -637,38 +717,44 @@ export default class WebView extends Component {
       const stftDeck = document.getElementById("deckStft");
       const liveDeck = document.getElementById("deckLive");
       const editDeck = document.getElementById("deckEdit");
+      const loudnessDeck = document.getElementById("deckLoudness");
       if (p === "none" || !p) {
-        if (stftDeck && liveDeck && editDeck) {
+        if (stftDeck && liveDeck && editDeck && loudnessDeck) {
           stftDeck.setAttribute("hidden", "");
           liveDeck.setAttribute("hidden", "");
           editDeck.setAttribute("hidden", "");
+          loudnessDeck.setAttribute("hidden", "");
         }
         document.getElementById("tabStft")?.setAttribute("aria-selected", "false");
         document
           .getElementById("tabLiveSpec")
           ?.setAttribute("aria-selected", "false");
         document.getElementById("tabEdit")?.setAttribute("aria-selected", "false");
+        document.getElementById("tabLoudness")?.setAttribute("aria-selected", "false");
         return;
       }
       const map: Record<string, string> = {
         stft: ".js-paneSelect-stft",
         liveSpec: ".js-paneSelect-liveSpec",
         edit: ".js-paneSelect-edit",
+        loudness: ".js-paneSelect-loudness",
       };
       const hit = map[p];
       if (hit) {
         document.querySelector(hit)?.classList.add("workspacePane__tab--active");
       }
-      if (p === "stft" || p === "liveSpec" || p === "edit") {
-        if (stftDeck && liveDeck && editDeck) {
+      if (p === "stft" || p === "liveSpec" || p === "edit" || p === "loudness") {
+        if (stftDeck && liveDeck && editDeck && loudnessDeck) {
           stftDeck.toggleAttribute("hidden", p !== "stft");
           liveDeck.toggleAttribute("hidden", p !== "liveSpec");
           editDeck.toggleAttribute("hidden", p !== "edit");
+          loudnessDeck.toggleAttribute("hidden", p !== "loudness");
         }
-        const tabSel: Record<string, [string, string, string]> = {
-          stft: ["true", "false", "false"],
-          liveSpec: ["false", "true", "false"],
-          edit: ["false", "false", "true"],
+        const tabSel: Record<string, [string, string, string, string]> = {
+          stft: ["true", "false", "false", "false"],
+          liveSpec: ["false", "true", "false", "false"],
+          edit: ["false", "false", "true", "false"],
+          loudness: ["false", "false", "false", "true"],
         };
         const tri = tabSel[p];
         document.getElementById("tabStft")?.setAttribute("aria-selected", tri[0]);
@@ -676,6 +762,7 @@ export default class WebView extends Component {
           .getElementById("tabLiveSpec")
           ?.setAttribute("aria-selected", tri[1]);
         document.getElementById("tabEdit")?.setAttribute("aria-selected", tri[2]);
+        document.getElementById("tabLoudness")?.setAttribute("aria-selected", tri[3]);
       }
     }) as EventListener);
 

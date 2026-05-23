@@ -5,10 +5,17 @@ import AnalyzeSettingsService from "../../services/analyzeSettingsService";
 import { quinticBSplineSmooth } from "../../utils/quinticBSpline";
 import { akimaResample } from "../../utils/modifiedAkima";
 import {
+  emaDecayFromReleaseDbPerSec,
+  peakFallDbPerFrameFromRelease,
+} from "../../utils/liveBallistics";
+import {
   monitoringGainsForMode,
-  smoothingPctToDecay,
   spectrumTiltDbAboveFloor,
 } from "../../utils/liveMonitoring";
+import {
+  smoothPeakDisplayAlongBinsInto,
+  stepSpectralPeakDisplay,
+} from "../../utils/spectralPeakDisplay";
 
 const DB_FLOOR = -90;
 const DB_CEIL = 0;
@@ -78,10 +85,18 @@ export default class SpectralAnalyzerComponent extends Component {
   private _rafId: number = 0;
   private _bufL: Float32Array = new Float32Array(1024);
   private _bufR: Float32Array = new Float32Array(1024);
-  private _emaPeak: Float32Array = new Float32Array(LOG_POINTS);
+  private _emaPeakLogical: Float32Array = new Float32Array(LOG_POINTS);
+  /** Smoothed toward {@link _emaPeakLogical} for stroked outline + readout (reduces spatial kinks across bins). */
+  private _emaPeakDisplay: Float32Array = new Float32Array(LOG_POINTS);
+  /** Temp for one pass of {@link smoothPeakDisplayAlongBinsInto}. */
+  private _peakSpatialScratch: Float32Array = new Float32Array(LOG_POINTS);
   private _emaRms: Float32Array = new Float32Array(LOG_POINTS);
+  /** Wall-clock expiry (ms since `performance.now()` origin) after last peak crest; decay only after this time. */
+  private _peakHoldUntilMs: Float64Array = new Float64Array(LOG_POINTS);
   private _hoverCx = 0;
   private _hoverCy = 0;
+  private _hoverClientX = 0;
+  private _hoverClientY = 0;
   private _hoverActive = false;
 
   /** Keep animating while playing or while the pointer is over the plot (crosshair / readout when paused). */
@@ -116,13 +131,17 @@ export default class SpectralAnalyzerComponent extends Component {
       ".spectralAnalyzer__hoverReadout",
     ) as HTMLElement;
 
-    this._emaPeak.fill(DB_FLOOR);
+    this._emaPeakLogical.fill(DB_FLOOR);
+    this._emaPeakDisplay.fill(DB_FLOOR);
     this._emaRms.fill(DB_FLOOR);
+    this._peakHoldUntilMs.fill(0);
 
     this._addEventlistener(containerEl, EventType.MOUSE_MOVE, (e: MouseEvent) => {
       const r = this._canvas.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) return;
       this._hoverActive = true;
+      this._hoverClientX = e.clientX;
+      this._hoverClientY = e.clientY;
       this._hoverCx = (e.clientX - r.left) * (this._canvas.width / r.width);
       this._hoverCy = (e.clientY - r.top) * (this._canvas.height / r.height);
       this._syncRafToState();
@@ -264,7 +283,7 @@ export default class SpectralAnalyzerComponent extends Component {
       ctx.beginPath();
       for (let i = 0; i < LOG_POINTS; i++) {
         const x = freqToX(LOG_FREQS[i]);
-        const y = dbToY(clampDb(this._emaPeak[i]));
+        const y = dbToY(clampDb(this._emaPeakDisplay[i]));
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
@@ -276,10 +295,15 @@ export default class SpectralAnalyzerComponent extends Component {
       if (this._bufL.length !== fftSize / 2) {
         this._bufL = new Float32Array(fftSize / 2);
         this._bufR = new Float32Array(fftSize / 2);
-        this._emaPeak = new Float32Array(LOG_POINTS);
+        this._emaPeakLogical = new Float32Array(LOG_POINTS);
+        this._emaPeakDisplay = new Float32Array(LOG_POINTS);
+        this._peakSpatialScratch = new Float32Array(LOG_POINTS);
         this._emaRms = new Float32Array(LOG_POINTS);
-        this._emaPeak.fill(DB_FLOOR);
+        this._peakHoldUntilMs = new Float64Array(LOG_POINTS);
+        this._emaPeakLogical.fill(DB_FLOOR);
+        this._emaPeakDisplay.fill(DB_FLOOR);
         this._emaRms.fill(DB_FLOOR);
+        this._peakHoldUntilMs.fill(0);
       }
 
       if (playing) {
@@ -319,25 +343,47 @@ export default class SpectralAnalyzerComponent extends Component {
         const resampled = akimaResample(srcXs, srcYs, LOG_FREQS);
         const inst = quinticBSplineSmooth(resampled);
 
-        const decay = smoothingPctToDecay(
-          this._analyzeSettingsService.liveVisualSmoothingPct,
+        const decay = emaDecayFromReleaseDbPerSec(
+          this._analyzeSettingsService.liveSpectrumReleaseDbPerSec,
         );
-        const smoothT =
-          this._analyzeSettingsService.liveVisualSmoothingPct / 100;
-        const peakFallDbPerFrame = (10 + smoothT * 48) / 60;
+        const peakFallDbPerFrame = peakFallDbPerFrameFromRelease(
+          this._analyzeSettingsService.liveSpectrumReleaseDbPerSec,
+        );
+        const peakHoldMs =
+          this._analyzeSettingsService.liveSpectrumPeakHoldSec * 1000;
+        const nowMs = typeof performance !== "undefined" ? performance.now() : 0;
 
         for (let i = 0; i < LOG_POINTS; i++) {
           const v = clampDb(inst[i]);
 
-          const pk = this._emaPeak[i];
+          const pk = this._emaPeakLogical[i];
           if (v >= pk) {
-            this._emaPeak[i] = v;
+            this._emaPeakLogical[i] = v;
+            this._peakHoldUntilMs[i] = nowMs + peakHoldMs;
           } else {
-            this._emaPeak[i] = Math.max(v, pk - peakFallDbPerFrame);
+            const holdActive =
+              peakHoldMs > 0 && nowMs < this._peakHoldUntilMs[i];
+            if (!holdActive) {
+              this._emaPeakLogical[i] = Math.max(v, pk - peakFallDbPerFrame);
+            }
           }
 
           this._emaRms[i] = decay * this._emaRms[i] + (1 - decay) * v;
         }
+
+        for (let i = 0; i < LOG_POINTS; i++) {
+          this._emaPeakDisplay[i] = stepSpectralPeakDisplay(
+            this._emaPeakLogical[i],
+            this._emaPeakDisplay[i],
+            peakFallDbPerFrame,
+          );
+        }
+        smoothPeakDisplayAlongBinsInto(
+          this._emaPeakDisplay,
+          this._peakSpatialScratch,
+          LOG_POINTS,
+        );
+        this._emaPeakDisplay.set(this._peakSpatialScratch);
       }
 
       drawSpectrumCurves();
@@ -363,13 +409,18 @@ export default class SpectralAnalyzerComponent extends Component {
       const dbY = dbFromCanvasY(my, padT, drawH);
       let pkStr = "—";
       let rmStr = "—";
-      if (analysers && this._emaPeak.length >= 2) {
+      if (analysers && this._emaPeakDisplay.length >= 2) {
         const li = logIndexFromHz(hz);
-        pkStr = lerpF32(this._emaPeak, li).toFixed(1);
+        pkStr = lerpF32(this._emaPeakDisplay, li).toFixed(1);
         rmStr = lerpF32(this._emaRms, li).toFixed(1);
       }
       this._readoutEl.style.visibility = "visible";
       this._readoutEl.innerHTML = `${fmtHzLive(hz)}<br>Y ${dbY.toFixed(1)} dBFS<br>Peak ${pkStr} dBFS<br>RMS ${rmStr} dBFS`;
+      this._readoutEl.style.left = `${Math.min(
+        this._hoverClientX + 12,
+        window.innerWidth - this._readoutEl.offsetWidth - 8,
+      )}px`;
+      this._readoutEl.style.top = `${Math.max(4, this._hoverClientY - this._readoutEl.offsetHeight - 10)}px`;
     } else {
       this._readoutEl.style.visibility = "hidden";
     }

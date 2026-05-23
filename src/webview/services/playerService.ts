@@ -2,7 +2,16 @@ import { EventType } from "../events";
 import Service from "../service";
 import PlayerSettingsService from "./playerSettingsService";
 import AnalyzeSettingsService from "./analyzeSettingsService";
-import { monitoringGainsForMode } from "../utils/liveMonitoring";
+import {
+  MONITOR_BAND_MASK_ALL,
+  monitoringGainsForMode,
+  sanitizeMonitorBandEdges,
+} from "../utils/liveMonitoring";
+import {
+  LoudnessWorkletNode,
+  type LoudnessMeasurements,
+} from "loudness-worklet";
+import { loadLoudnessWorkletModule } from "../utils/loudnessWorkletLoader";
 
 export default class PlayerService extends Service {
   private _audioContext: AudioContext;
@@ -80,6 +89,11 @@ export default class PlayerService extends Service {
   private _gLR: GainNode | null = null;
   private _gRL: GainNode | null = null;
   private _gRR: GainNode | null = null;
+  private _loudnessWorklet: AudioWorkletNode | null = null;
+  private _loudnessWorkletPromise: Promise<AudioWorkletNode | null> | null =
+    null;
+  private _latestLoudness: LoudnessMeasurements | null = null;
+  private _sessionMaxTruePeakDbTp = Number.NEGATIVE_INFINITY;
 
   private _seekbarValue: number = 0;
   private _animationFrameID: number = 0;
@@ -165,6 +179,16 @@ export default class PlayerService extends Service {
       EventType.AS_UPDATE_LIVE_MONITORING_MODE,
       () => this._applyMonitoringGains(),
     );
+
+    const rebuildLiveGraphBands = () => this._onMonitorBandsChanged();
+    this._analyzeSettingsService.addEventListener(
+      EventType.AS_UPDATE_MONITOR_BAND_EDGES,
+      rebuildLiveGraphBands,
+    );
+    this._analyzeSettingsService.addEventListener(
+      EventType.AS_UPDATE_MONITOR_BAND_SOLO_MASK,
+      rebuildLiveGraphBands,
+    );
   }
 
   /** Returns the live analyser pair, or null when the live graph is not active. */
@@ -175,7 +199,31 @@ export default class PlayerService extends Service {
     return { left: this._analyserL, right: this._analyserR };
   }
 
+  public get audioContext(): AudioContext {
+    return this._audioContext;
+  }
+
+  public get sampleRate(): number {
+    return this._audioBuffer.sampleRate;
+  }
+
+  /** Latest loudness-worklet measurements (stereo program). */
+  public getLoudnessMeasurements(): LoudnessMeasurements | null {
+    return this._latestLoudness;
+  }
+
+  /** Session maximum true peak (dBTP) from loudness-worklet. */
+  public get sessionMaxTruePeakDbTp(): number {
+    return this._sessionMaxTruePeakDbTp;
+  }
+
+  public resetLoudnessSessionPeaks(): void {
+    this._sessionMaxTruePeakDbTp = Number.NEGATIVE_INFINITY;
+  }
+
   // ─── Private graph helpers ─────────────────────────────────────────────────
+
+  private _monitorBandNodes: AudioNode[] = [];
 
   private _needsLiveGraph(): boolean {
     return (
@@ -199,9 +247,7 @@ export default class PlayerService extends Service {
 
   private _applyMonitoringGains(): void {
     if (!this._gLL || !this._gLR || !this._gRL || !this._gRR) return;
-    const g = monitoringGainsForMode(
-      this._analyzeSettingsService.liveMonitoringMode,
-    );
+    const g = monitoringGainsForMode(this._analyzeSettingsService.liveMonitoringMode);
     this._gLL.gain.value = g.ll;
     this._gLR.gain.value = g.lr;
     this._gRL.gain.value = g.rl;
@@ -251,7 +297,138 @@ export default class PlayerService extends Service {
     this._applyMonitoringGains();
   }
 
+  private _onMonitorBandsChanged(): void {
+    if (!this._liveGraphActive) {
+      return;
+    }
+    if (this._isPlaying) {
+      this.pause();
+      this.play();
+    }
+  }
+
+  private _teardownMonitorBandChain(): void {
+    for (const n of [...this._monitorBandNodes].reverse()) {
+      try {
+        (n as AudioNode).disconnect();
+      } catch {
+        /* ok */
+      }
+    }
+    this._monitorBandNodes = [];
+  }
+
+  /**
+   * Sum of band-pass limbs per channel between gainNode and downstream live chain.
+   * Each band uses two cascaded Butterworth SOS per edge (~4th-order rolloff vs 12 dB/oct
+   * single biquads) for moderate adjacent-band bleed reduction without extreme resonances.
+   * `gain → split stereo → Σ(HPᵢ²·LPᵢ²) → merger` (per channel).
+   */
+  private _buildMonitorBandStereoMerger(): ChannelMergerNode | null {
+    const ctx = this._audioContext;
+    const edges = sanitizeMonitorBandEdges(
+      [...this._analyzeSettingsService.monitorBandEdgesHz],
+      this.sampleRate,
+    );
+    const mask =
+      this._analyzeSettingsService.monitorBandSoloMask & MONITOR_BAND_MASK_ALL;
+
+    const splitIn = ctx.createChannelSplitter(2);
+    const mergeStereo = ctx.createChannelMerger(2);
+    const sumL = ctx.createGain();
+    const sumR = ctx.createGain();
+    sumL.gain.value = 1;
+    sumR.gain.value = 1;
+    this._monitorBandNodes.push(splitIn, mergeStereo, sumL, sumR);
+
+    let anyBand = false;
+    for (let band = 0; band < 5; band++) {
+      if (((mask >> band) & 1) === 0) {
+        continue;
+      }
+      const lo = edges[band];
+      const hi = edges[band + 1];
+      if (!(lo < hi && hi - lo > 0.5)) {
+        continue;
+      }
+
+      const hpL1 = ctx.createBiquadFilter();
+      hpL1.type = "highpass";
+      hpL1.Q.value = Math.SQRT1_2;
+      hpL1.frequency.value = lo;
+      const hpL2 = ctx.createBiquadFilter();
+      hpL2.type = "highpass";
+      hpL2.Q.value = Math.SQRT1_2;
+      hpL2.frequency.value = lo;
+      const lpL1 = ctx.createBiquadFilter();
+      lpL1.type = "lowpass";
+      lpL1.Q.value = Math.SQRT1_2;
+      lpL1.frequency.value = hi;
+      const lpL2 = ctx.createBiquadFilter();
+      lpL2.type = "lowpass";
+      lpL2.Q.value = Math.SQRT1_2;
+      lpL2.frequency.value = hi;
+
+      const hpR1 = ctx.createBiquadFilter();
+      hpR1.type = "highpass";
+      hpR1.Q.value = Math.SQRT1_2;
+      hpR1.frequency.value = lo;
+      const hpR2 = ctx.createBiquadFilter();
+      hpR2.type = "highpass";
+      hpR2.Q.value = Math.SQRT1_2;
+      hpR2.frequency.value = lo;
+      const lpR1 = ctx.createBiquadFilter();
+      lpR1.type = "lowpass";
+      lpR1.Q.value = Math.SQRT1_2;
+      lpR1.frequency.value = hi;
+      const lpR2 = ctx.createBiquadFilter();
+      lpR2.type = "lowpass";
+      lpR2.Q.value = Math.SQRT1_2;
+      lpR2.frequency.value = hi;
+
+      splitIn.connect(hpL1, 0, 0);
+      hpL1.connect(hpL2);
+      hpL2.connect(lpL1);
+      lpL1.connect(lpL2);
+      lpL2.connect(sumL);
+
+      splitIn.connect(hpR1, 1, 0);
+      hpR1.connect(hpR2);
+      hpR2.connect(lpR1);
+      lpR1.connect(lpR2);
+      lpR2.connect(sumR);
+
+      this._monitorBandNodes.push(
+        hpL1,
+        hpL2,
+        lpL1,
+        lpL2,
+        hpR1,
+        hpR2,
+        lpR1,
+        lpR2,
+      );
+      anyBand = true;
+    }
+
+    if (!anyBand) {
+      this._teardownMonitorBandChain();
+      return null;
+    }
+
+    sumL.connect(mergeStereo, 0, 0);
+    sumR.connect(mergeStereo, 0, 1);
+    this._gainNode.connect(splitIn);
+    return mergeStereo;
+  }
+
   private _destroyLiveGraph(): void {
+    this._teardownMonitorBandChain();
+    try {
+      this._loudnessWorklet?.disconnect();
+    } catch {
+      /* ok */
+    }
     try { this._merger?.disconnect(); } catch (_) { /* already disconnected */ }
     try { this._gLL?.disconnect(); } catch (_) { /* already disconnected */ }
     try { this._gLR?.disconnect(); } catch (_) { /* already disconnected */ }
@@ -269,7 +446,91 @@ export default class PlayerService extends Service {
     this._gLR = null;
     this._gRL = null;
     this._gRR = null;
+    this._loudnessWorklet = null;
+    this._loudnessWorkletPromise = null;
+    this._latestLoudness = null;
     this._liveGraphActive = false;
+  }
+
+  private async _ensureLoudnessWorklet(): Promise<AudioWorkletNode | null> {
+    if (!this._liveGraphActive) {
+      return null;
+    }
+    if (this._loudnessWorklet) {
+      return this._loudnessWorklet;
+    }
+    if (this._loudnessWorkletPromise) {
+      return this._loudnessWorkletPromise;
+    }
+    this._loudnessWorkletPromise = (async () => {
+      try {
+        await loadLoudnessWorkletModule(this._audioContext);
+        const node = new LoudnessWorkletNode(this._audioContext, {
+          processorOptions: { interval: 0.05, capacity: 0 },
+        });
+        node.port.onmessage = (e: MessageEvent<{ currentMeasurements: LoudnessMeasurements[] }>) => {
+          const m = e.data.currentMeasurements?.[0];
+          if (!m) return;
+          this._latestLoudness = m;
+          if (
+            Number.isFinite(m.maximumTruePeakLevel) &&
+            m.maximumTruePeakLevel > this._sessionMaxTruePeakDbTp
+          ) {
+            this._sessionMaxTruePeakDbTp = m.maximumTruePeakLevel;
+          }
+        };
+        if (!this._liveGraphActive) {
+          node.disconnect();
+          return null;
+        }
+        this._loudnessWorklet = node;
+        return node;
+      } catch {
+        return null;
+      } finally {
+        this._loudnessWorkletPromise = null;
+      }
+    })();
+    return this._loudnessWorkletPromise;
+  }
+
+  private _connectGainToLiveGraph(): void {
+    if (!this._splitter) {
+      return;
+    }
+    this._teardownMonitorBandChain();
+    try {
+      this._gainNode.disconnect();
+    } catch {
+      /* ok */
+    }
+
+    const bypassBands = this._analyzeSettingsService.monitorBandBypassActive();
+    let upstream: AudioNode = this._gainNode;
+    if (!bypassBands) {
+      const merged = this._buildMonitorBandStereoMerger();
+      if (merged) {
+        upstream = merged;
+      }
+    }
+
+    if (this._loudnessWorklet) {
+      upstream.connect(this._loudnessWorklet);
+      this._loudnessWorklet.connect(this._splitter);
+    } else {
+      upstream.connect(this._splitter);
+      void this._ensureLoudnessWorklet().then((node) => {
+        if (!node || !this._liveGraphActive || !this._isPlaying) {
+          return;
+        }
+        try {
+          this._gainNode.disconnect();
+        } catch {
+          /* ok */
+        }
+        this._connectGainToLiveGraph();
+      });
+    }
   }
 
   /**
@@ -283,7 +544,7 @@ export default class PlayerService extends Service {
     this._updateLiveGraph();
 
     if (this._liveGraphActive && this._splitter) {
-      this._gainNode.connect(this._splitter);
+      this._connectGainToLiveGraph();
     } else {
       this._gainNode.connect(this._audioContext.destination);
     }

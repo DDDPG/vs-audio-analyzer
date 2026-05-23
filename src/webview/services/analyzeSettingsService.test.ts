@@ -726,30 +726,116 @@ describe("analyzeSettingsService", () => {
     expect(as.toCachedDefaults().liveAnalysisFftSize).toBe(4096);
   });
 
-  test("liveVisualSmoothingPct should be 35 by default", () => {
+  test("live release defaults to 8 dB/s", () => {
     const as = AnalyzeSettingsService.fromDefaultSetting(
       defaultSettings,
       audioBuffer,
     );
-    expect(as.liveVisualSmoothingPct).toBe(35);
+    expect(as.liveSpectrumReleaseDbPerSec).toBe(8);
+    expect(as.livePolarFieldReleaseDbPerSec).toBe(8);
+    expect(as.liveLevelMeterReleaseDbPerSec).toBe(8);
+    expect(as.livePolarLevelGatePct).toBe(28);
+    expect(as.livePolarSampleRadiusGamma).toBe(1);
+    expect(as.livePolarSampleFillBrightnessPct).toBe(10);
   });
 
-  test("liveVisualSmoothingPct respects default from config", () => {
+  test("livePolarSampleFillBrightnessPct is persisted via toCachedDefaults", () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    as.livePolarSampleFillBrightnessPct = 20;
+    expect(as.toCachedDefaults().livePolarSampleFillBrightnessPct).toBe(20);
+  });
+
+  test("livePolarSampleRadiusGamma is persisted via toCachedDefaults", () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    as.livePolarSampleRadiusGamma = 0.75;
+    expect(as.toCachedDefaults().livePolarSampleRadiusGamma).toBe(0.75);
+  });
+
+  test("legacy liveAnalysisVisualSmoothingPct migrates to release dB/s", () => {
     defaultSettings.liveAnalysisVisualSmoothingPct = 80;
     const as = AnalyzeSettingsService.fromDefaultSetting(
       defaultSettings,
       audioBuffer,
     );
-    expect(as.liveVisualSmoothingPct).toBe(80);
+    expect(as.liveSpectrumReleaseDbPerSec).toBe(1);
+    expect(as.livePolarFieldReleaseDbPerSec).toBe(1);
+    expect(as.liveLevelMeterReleaseDbPerSec).toBe(1);
+    expect(as.liveSpectrumSmoothingPct).toBeGreaterThanOrEqual(78);
   });
 
-  test("liveVisualSmoothingPct is persisted via toCachedDefaults", () => {
+  test("liveSpectrumReleaseDbPerSec is persisted via toCachedDefaults", () => {
     const as = AnalyzeSettingsService.fromDefaultSetting(
       defaultSettings,
       audioBuffer,
     );
-    as.liveVisualSmoothingPct = 0;
-    expect(as.toCachedDefaults().liveAnalysisVisualSmoothingPct).toBe(0);
+    as.liveSpectrumReleaseDbPerSec = 0.5;
+    expect(as.toCachedDefaults().liveSpectrumReleaseDbPerSec).toBe(0.5);
+  });
+
+  test("liveSpectrumPeakHoldSec should be 0 by default", () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    expect(as.liveSpectrumPeakHoldSec).toBe(0);
+  });
+
+  test("liveSpectrumPeakHoldSec respects default from config", () => {
+    defaultSettings.liveSpectrumPeakHoldSec = 1.2;
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    expect(as.liveSpectrumPeakHoldSec).toBe(1.2);
+  });
+
+  test("liveSpectrumPeakHoldSec is clamped on hydrate and assign", () => {
+    defaultSettings.liveSpectrumPeakHoldSec = 10;
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    expect(as.liveSpectrumPeakHoldSec).toBe(3);
+    as.liveSpectrumPeakHoldSec = -0.5;
+    expect(as.liveSpectrumPeakHoldSec).toBe(0);
+    as.liveSpectrumPeakHoldSec = 1.333;
+    expect(as.liveSpectrumPeakHoldSec).toBe(1.35);
+  });
+
+  test("liveSpectrumPeakHoldSec is persisted via toCachedDefaults", () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    as.liveSpectrumPeakHoldSec = 0.5;
+    expect(as.toCachedDefaults().liveSpectrumPeakHoldSec).toBe(0.5);
+  });
+
+  test("liveSpectrumPeakHoldSec dispatches event on change", async () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    const detail = await waitEventForAction(
+      () => { as.liveSpectrumPeakHoldSec = 1; },
+      as,
+      EventType.AS_UPDATE_LIVE_SPECTRUM_PEAK_HOLD,
+    );
+    expect(detail.value).toBe(1);
+  });
+
+  test("liveSoundFieldMode defaults to polarLevel", () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    expect(as.liveSoundFieldMode).toBe("polarLevel");
   });
 
   test("liveSpectrumTiltDbPerOct should be 0 by default", () => {
@@ -793,5 +879,48 @@ describe("analyzeSettingsService", () => {
     );
     as.liveMonitoringMode = "m";
     expect(as.toCachedDefaults().liveMonitoringMode).toBe("m");
+  });
+
+  test('"swap" monitoring mode persists via toCachedDefaults', () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    as.liveMonitoringMode = "swap";
+    expect(as.toCachedDefaults().liveMonitoringMode).toBe(
+      "swap",
+    );
+  });
+
+  test("migrates legacy monitorStereoSwap into liveMonitoringMode swap", () => {
+    defaultSettings.liveMonitoringMode = "lr";
+    defaultSettings.monitorStereoSwap = true;
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    expect(as.liveMonitoringMode).toBe("swap");
+  });
+
+  test("does not migrate monitorStereoSwap when another channel mode was saved", () => {
+    defaultSettings.liveMonitoringMode = "m";
+    defaultSettings.monitorStereoSwap = true;
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    expect(as.liveMonitoringMode).toBe("m");
+  });
+
+  test("applyMonitorBandsSnapshot sets edges and mask", () => {
+    const as = AnalyzeSettingsService.fromDefaultSetting(
+      defaultSettings,
+      audioBuffer,
+    );
+    as.applyMonitorBandsSnapshot(
+      [30, 70, 200, 800, 4000, 20000],
+      0b011,
+    );
+    expect(as.monitorBandSoloMask).toBe(0b011);
   });
 });

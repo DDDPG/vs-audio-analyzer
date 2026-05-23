@@ -37,10 +37,22 @@ export default class PlayerSettingsComponent extends Component {
       <div>
           <input class="playerSetting__input js-playerSetting-matchFilterFrequencyToSpectrogram" type="checkbox">match to spectrogram frequency range
       </div>
+      <h3>Monitor band edges (solo)</h3>
+      <p class="playerSetting__muted">Six ascending crossover frequencies (Hz). Band&nbsp;i listens to [edge<sub>i</sub>, edge<sub>i+1</sub>].
+        Applies to live playback monitoring path only.</p>
+      <div class="playerSetting__monitorEdges">
+        <label>Edge 1 <input class="playerSetting__input js-monitorBand-edge-0" type="number" min="10" step="1" /> Hz</label>
+        <label>Edge 2 <input class="playerSetting__input js-monitorBand-edge-1" type="number" min="10" step="1" /> Hz</label>
+        <label>Edge 3 <input class="playerSetting__input js-monitorBand-edge-2" type="number" min="10" step="1" /> Hz</label>
+        <label>Edge 4 <input class="playerSetting__input js-monitorBand-edge-3" type="number" min="10" step="1" /> Hz</label>
+        <label>Edge 5 <input class="playerSetting__input js-monitorBand-edge-4" type="number" min="10" step="1" /> Hz</label>
+        <label>Upper <input class="playerSetting__input js-monitorBand-edge-5" type="number" min="10" step="1" /> Hz</label>
+      </div>
     </div>
     `;
 
     this.initPlayerSettingUI();
+    this.initMonitorBandEdgesUI();
   }
 
   private initPlayerSettingUI() {
@@ -155,5 +167,42 @@ export default class PlayerSettingsComponent extends Component {
         settings.lpfFrequency = Number(lpfFrequencyInput.value);
       }
     });
+  }
+
+  private initMonitorBandEdgesUI(): void {
+    const as = this._analyzeSettingService;
+    const inputs = [0, 1, 2, 3, 4, 5].map(
+      (i) =>
+        this._componentRoot.querySelector(
+          `.js-monitorBand-edge-${i}`,
+        ) as HTMLInputElement,
+    );
+
+    const sync = (): void => {
+      const nyquist = Math.max(11, Math.floor(as.sampleRate / 2));
+      const e = as.monitorBandEdgesHz;
+      inputs.forEach((inp, idx) => {
+        inp.min = "10";
+        inp.max = String(nyquist);
+        inp.step = "1";
+        inp.value =
+          typeof e[idx] === "number" && Number.isFinite(e[idx])
+            ? String(Math.round(e[idx] * 1000) / 1000)
+            : "";
+      });
+    };
+
+    sync();
+
+    const push = (): void => {
+      const vals = inputs.map((inp) => Number(inp.value));
+      as.monitorBandEdgesHz = vals;
+      sync();
+    };
+
+    for (const inp of inputs) {
+      this._addEventlistener(inp, EventType.CHANGE, push);
+    }
+    this._addEventlistener(as, EventType.AS_UPDATE_MONITOR_BAND_EDGES, sync);
   }
 }

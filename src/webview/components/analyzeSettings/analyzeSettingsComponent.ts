@@ -7,6 +7,13 @@ import AnalyzeSettingsService, {
   FftBackend,
   WindowType,
 } from "../../services/analyzeSettingsService";
+import {
+  formatReleaseDbPerSecLabel,
+  LIVE_RELEASE_DBPS_MAX,
+  LIVE_RELEASE_DBPS_MIN,
+  LIVE_SPECTRUM_PEAK_HOLD_SEC_MAX,
+  LIVE_SPECTRUM_PEAK_HOLD_SEC_MIN,
+} from "../../utils/liveBallistics";
 
 export default class AnalyzeSettingsComponent extends Component {
   private _componentRoot: HTMLElement;
@@ -117,9 +124,47 @@ export default class AnalyzeSettingsComponent extends Component {
           </select>
       </div>
       <div>
-          Live visual smoothing (goniometer / spectrum / RMS ballistics):
-          <input class="analyzeSetting__input js-analyzeSetting-liveVisualSmoothingPct" type="range" min="0" max="100" step="1">
-          <span class="js-analyzeSetting-liveVisualSmoothingPctLabel"></span>
+          Sound field mode:
+          <select class="analyzeSetting__select js-analyzeSetting-liveSoundFieldMode">
+              <option value="polarSample">Polar Sample</option>
+              <option value="polarLevel">Polar Level</option>
+              <option value="lissajous">Lissajous</option>
+          </select>
+      </div>
+      <div>
+          Polar Level gate (% of peak, 0 = off):
+          <input class="analyzeSetting__input js-analyzeSetting-livePolarLevelGatePct" type="range" min="0" max="100" step="1">
+          <span class="js-analyzeSetting-livePolarLevelGatePctLabel"></span>
+      </div>
+      <div>
+          Polar Sample radius gamma:
+          <input class="analyzeSetting__input js-analyzeSetting-livePolarSampleRadiusGamma" type="range" min="0.5" max="2" step="0.05">
+          <span class="js-analyzeSetting-livePolarSampleRadiusGammaLabel"></span>
+      </div>
+      <div>
+          Polar Sample fill brightness (%):
+          <input class="analyzeSetting__input js-analyzeSetting-livePolarSampleFillBrightnessPct" type="range" min="0" max="50" step="1">
+          <span class="js-analyzeSetting-livePolarSampleFillBrightnessPctLabel"></span>
+      </div>
+      <div>
+          Sound field release (dB/s):
+          <input class="analyzeSetting__input js-analyzeSetting-livePolarFieldReleaseDbPerSec" type="range" min="${LIVE_RELEASE_DBPS_MIN}" max="${LIVE_RELEASE_DBPS_MAX}" step="0.5">
+          <span class="js-analyzeSetting-livePolarFieldReleaseDbPerSecLabel"></span>
+      </div>
+      <div>
+          Spectrum release (dB/s):
+          <input class="analyzeSetting__input js-analyzeSetting-liveSpectrumReleaseDbPerSec" type="range" min="${LIVE_RELEASE_DBPS_MIN}" max="${LIVE_RELEASE_DBPS_MAX}" step="0.5">
+          <span class="js-analyzeSetting-liveSpectrumReleaseDbPerSecLabel"></span>
+      </div>
+      <div>
+          Spectrum peak hold (s):
+          <input class="analyzeSetting__input js-analyzeSetting-liveSpectrumPeakHoldSec" type="range" min="${LIVE_SPECTRUM_PEAK_HOLD_SEC_MIN}" max="${LIVE_SPECTRUM_PEAK_HOLD_SEC_MAX}" step="0.05">
+          <span class="js-analyzeSetting-liveSpectrumPeakHoldSecLabel"></span>
+      </div>
+      <div>
+          Level meter release (dB/s):
+          <input class="analyzeSetting__input js-analyzeSetting-liveLevelMeterReleaseDbPerSec" type="range" min="${LIVE_RELEASE_DBPS_MIN}" max="${LIVE_RELEASE_DBPS_MAX}" step="0.5">
+          <span class="js-analyzeSetting-liveLevelMeterReleaseDbPerSecLabel"></span>
       </div>
       <div>
           Live spectrum tilt (dB/oct @ 1 kHz, roll-off toward HF):
@@ -465,32 +510,140 @@ export default class AnalyzeSettingsComponent extends Component {
       },
     );
 
-    const liveVisualSmoothingPctInput = <HTMLInputElement>(
-      this._componentRoot.querySelector(
-        ".js-analyzeSetting-liveVisualSmoothingPct",
-      )
-    );
-    const liveVisualSmoothingPctLabel = <HTMLElement>(
-      this._componentRoot.querySelector(
-        ".js-analyzeSetting-liveVisualSmoothingPctLabel",
-      )
-    );
-    const syncSmoothingLabel = () => {
-      liveVisualSmoothingPctLabel.textContent = `${settings.liveVisualSmoothingPct}`;
+    const wirePctSlider = (
+      inputSel: string,
+      labelSel: string,
+      getVal: () => number,
+      setVal: (n: number) => void,
+      eventType: string,
+      format: (v: number) => string = (v) => String(v),
+    ) => {
+      const input = this._componentRoot.querySelector(inputSel) as HTMLInputElement;
+      const label = this._componentRoot.querySelector(labelSel) as HTMLElement;
+      const sync = () => {
+        label.textContent = format(getVal());
+      };
+      input.value = String(getVal());
+      sync();
+      this._addEventlistener(input, EventType.INPUT, () => {
+        setVal(Number(input.value));
+        sync();
+      });
+      this._addEventlistener(settings, eventType, (e: CustomEventInit<{ value: number }>) => {
+        input.value = String(e.detail.value);
+        label.textContent = format(e.detail.value);
+      });
     };
-    liveVisualSmoothingPctInput.value = String(settings.liveVisualSmoothingPct);
-    syncSmoothingLabel();
-    this._addEventlistener(liveVisualSmoothingPctInput, EventType.INPUT, () => {
-      settings.liveVisualSmoothingPct = Number(liveVisualSmoothingPctInput.value);
-      syncSmoothingLabel();
+
+    const wireReleaseSlider = (
+      inputSel: string,
+      labelSel: string,
+      getVal: () => number,
+      setVal: (n: number) => void,
+      eventType: string,
+    ) => {
+      const input = this._componentRoot.querySelector(inputSel) as HTMLInputElement;
+      const label = this._componentRoot.querySelector(labelSel) as HTMLElement;
+      const sync = () => {
+        label.textContent = formatReleaseDbPerSecLabel(getVal());
+      };
+      input.value = String(getVal());
+      sync();
+      this._addEventlistener(input, EventType.INPUT, () => {
+        setVal(Number(input.value));
+        sync();
+      });
+      this._addEventlistener(settings, eventType, (e: CustomEventInit<{ value: number }>) => {
+        input.value = String(e.detail.value);
+        label.textContent = formatReleaseDbPerSecLabel(e.detail.value);
+      });
+    };
+
+    wirePctSlider(
+      ".js-analyzeSetting-livePolarLevelGatePct",
+      ".js-analyzeSetting-livePolarLevelGatePctLabel",
+      () => settings.livePolarLevelGatePct,
+      (n) => { settings.livePolarLevelGatePct = n; },
+      EventType.AS_UPDATE_LIVE_POLAR_LEVEL_GATE,
+      (v) => `${v}%`,
+    );
+    wirePctSlider(
+      ".js-analyzeSetting-livePolarSampleRadiusGamma",
+      ".js-analyzeSetting-livePolarSampleRadiusGammaLabel",
+      () => settings.livePolarSampleRadiusGamma,
+      (n) => { settings.livePolarSampleRadiusGamma = n; },
+      EventType.AS_UPDATE_LIVE_POLAR_SAMPLE_RADIUS_GAMMA,
+      (v) => `γ ${v.toFixed(2)}`,
+    );
+    wirePctSlider(
+      ".js-analyzeSetting-livePolarSampleFillBrightnessPct",
+      ".js-analyzeSetting-livePolarSampleFillBrightnessPctLabel",
+      () => settings.livePolarSampleFillBrightnessPct,
+      (n) => { settings.livePolarSampleFillBrightnessPct = n; },
+      EventType.AS_UPDATE_LIVE_POLAR_SAMPLE_FILL_BRIGHTNESS,
+      (v) => `+${v}%`,
+    );
+    wireReleaseSlider(
+      ".js-analyzeSetting-livePolarFieldReleaseDbPerSec",
+      ".js-analyzeSetting-livePolarFieldReleaseDbPerSecLabel",
+      () => settings.livePolarFieldReleaseDbPerSec,
+      (n) => { settings.livePolarFieldReleaseDbPerSec = n; },
+      EventType.AS_UPDATE_LIVE_POLAR_FIELD_SMOOTHING,
+    );
+    wireReleaseSlider(
+      ".js-analyzeSetting-liveSpectrumReleaseDbPerSec",
+      ".js-analyzeSetting-liveSpectrumReleaseDbPerSecLabel",
+      () => settings.liveSpectrumReleaseDbPerSec,
+      (n) => { settings.liveSpectrumReleaseDbPerSec = n; },
+      EventType.AS_UPDATE_LIVE_SPECTRUM_SMOOTHING,
+    );
+    {
+      const input = <HTMLInputElement>(
+        this._componentRoot.querySelector(".js-analyzeSetting-liveSpectrumPeakHoldSec")
+      );
+      const label = <HTMLSpanElement>(
+        this._componentRoot.querySelector(
+          ".js-analyzeSetting-liveSpectrumPeakHoldSecLabel",
+        )
+      );
+      const fmt = (sec: number) => `${sec.toFixed(2)} s`;
+      const sync = () => {
+        label.textContent = fmt(settings.liveSpectrumPeakHoldSec);
+      };
+      input.value = String(settings.liveSpectrumPeakHoldSec);
+      sync();
+      this._addEventlistener(input, EventType.INPUT, () => {
+        settings.liveSpectrumPeakHoldSec = Number(input.value);
+        sync();
+      });
+      this._addEventlistener(settings, EventType.AS_UPDATE_LIVE_SPECTRUM_PEAK_HOLD, (e: CustomEventInit<{ value: number }>) => {
+        input.value = String(e.detail.value);
+        label.textContent = fmt(e.detail.value);
+      });
+    }
+    wireReleaseSlider(
+      ".js-analyzeSetting-liveLevelMeterReleaseDbPerSec",
+      ".js-analyzeSetting-liveLevelMeterReleaseDbPerSecLabel",
+      () => settings.liveLevelMeterReleaseDbPerSec,
+      (n) => { settings.liveLevelMeterReleaseDbPerSec = n; },
+      EventType.AS_UPDATE_LIVE_LEVEL_METER_SMOOTHING,
+    );
+
+    const liveSoundFieldModeSelect = <HTMLSelectElement>(
+      this._componentRoot.querySelector(".js-analyzeSetting-liveSoundFieldMode")
+    );
+    liveSoundFieldModeSelect.value = settings.liveSoundFieldMode;
+    this._addEventlistener(liveSoundFieldModeSelect, EventType.CHANGE, () => {
+      settings.liveSoundFieldMode = liveSoundFieldModeSelect.value as
+        | "polarSample"
+        | "polarLevel"
+        | "lissajous";
     });
     this._addEventlistener(
       settings,
-      EventType.AS_UPDATE_LIVE_VISUAL_SMOOTHING,
-      (e: CustomEventInit<{ value: number }>) => {
-        const v = e.detail.value;
-        liveVisualSmoothingPctInput.value = String(v);
-        liveVisualSmoothingPctLabel.textContent = String(v);
+      EventType.AS_UPDATE_LIVE_SOUND_FIELD_MODE,
+      (e: CustomEventInit) => {
+        liveSoundFieldModeSelect.value = String(e.detail.value);
       },
     );
 

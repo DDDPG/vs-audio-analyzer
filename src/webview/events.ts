@@ -53,10 +53,32 @@ export class EventType {
     "as-update-live-analysis-fft-size";
   public static readonly AS_UPDATE_LIVE_VISUAL_SMOOTHING =
     "as-update-live-visual-smoothing";
+  public static readonly AS_UPDATE_LIVE_SPECTRUM_SMOOTHING =
+    "as-update-live-spectrum-smoothing";
+  public static readonly AS_UPDATE_LIVE_POLAR_FIELD_SMOOTHING =
+    "as-update-live-polar-field-smoothing";
+  public static readonly AS_UPDATE_LIVE_LEVEL_METER_SMOOTHING =
+    "as-update-live-level-meter-smoothing";
+  public static readonly AS_UPDATE_LIVE_POLAR_LEVEL_GATE =
+    "as-update-live-polar-level-gate";
+  public static readonly AS_UPDATE_LIVE_POLAR_SAMPLE_RADIUS_GAMMA =
+    "as-update-live-polar-sample-radius-gamma";
+  public static readonly AS_UPDATE_LIVE_POLAR_SAMPLE_FILL_BRIGHTNESS =
+    "as-update-live-polar-sample-fill-brightness";
+  public static readonly AS_UPDATE_LIVE_SOUND_FIELD_MODE =
+    "as-update-live-sound-field-mode";
   public static readonly AS_UPDATE_LIVE_SPECTRUM_TILT =
     "as-update-live-spectrum-tilt";
+  public static readonly AS_UPDATE_LIVE_SPECTRUM_PEAK_HOLD =
+    "as-update-live-spectrum-peak-hold";
   public static readonly AS_UPDATE_LIVE_MONITORING_MODE =
     "as-update-live-monitoring-mode";
+  /** `detail: { value: readonly number[] }` — ascending Hz edges `[e0…e5]`, bands are `[eᵢ,eᵢ₊₁]`. */
+  public static readonly AS_UPDATE_MONITOR_BAND_EDGES =
+    "as-update-monitor-band-edges";
+  /** `detail: { value: number }` — 5-bit mask of active bands; 0 or 0b11111 = full-range bypass. */
+  public static readonly AS_UPDATE_MONITOR_BAND_SOLO_MASK =
+    "as-update-monitor-band-solo-mask";
   /** `detail: { pane: WorkspacePaneId }` — active workspace column for FAB / options. */
   public static readonly WORKSPACE_ACTIVE_PANE = "workspace-active-pane";
   public static readonly UPDATE_PLAYBACK_POSITION = "update-playback-position";
@@ -84,6 +106,8 @@ export type CursorReadoutPayload =
       peak: number;
       /** Nominal RMS window length in seconds (= STFT window / sample rate). */
       rmsWindowDurationSec: number;
+      /** ITU-R BS.1770 true peak (dBTP) for the hover window. */
+      truePeakDbTp?: number;
     }
   | {
       kind: "spectrogram";
@@ -93,6 +117,8 @@ export type CursorReadoutPayload =
       frequencyHz: number;
       /** Nominal RMS window length in seconds (= STFT window / sample rate). */
       rmsWindowDurationSec: number;
+      /** ITU-R BS.1770 true peak (dBTP) for the hover window. */
+      truePeakDbTp?: number;
     };
 
 export class DisposableEventListener extends Disposable {

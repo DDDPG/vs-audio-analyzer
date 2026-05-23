@@ -4,22 +4,65 @@ import PlayerService from "../../services/playerService";
 import AnalyzeSettingsService from "../../services/analyzeSettingsService";
 import {
   applyMonitoringToTimeDomain,
-  smoothingPctToDecay,
 } from "../../utils/liveMonitoring";
+import {
+  emaDecayFromReleaseDbPerSec,
+  peakFallDbPerFrameFromRelease,
+  scatterAlphaDecayFromReleaseDbPerSec,
+  scatterFadeOverlayAlphaFromReleaseDbPerSec,
+} from "../../utils/liveBallistics";
+import {
+  clipCircle,
+  clipUpperSemicircle,
+  computeInstantPolarBins,
+  interpolatePolarRmsAtAngle,
+  isInPhaseStereoAngle,
+  polarBinToAngleRad,
+  polarFieldCanvasXY,
+  polarLevelDrawLength,
+  polarLevelDrawNorm,
+  polarLevelDisplayScaleDecay,
+  polarSampleDisplayRadius,
+  polarSampleFillAlpha,
+  shapePolarInstantForBallistics,
+  stereoFieldAngleRad,
+  updatePolarDisplayScale,
+  updatePolarRmsPeak,
+  type SoundFieldMode,
+} from "../../utils/stereoPolarField";
 
 const ALPHA_MIN = 0.02;
-const MAX_BUFFER_POINTS = 2048 * 30;
+const MAX_BUFFER_POINTS = 2048 * 12;
 const MAX_CANVAS_PX = 4096;
+const MIN_CANVAS_CSS = 24;
+const POLAR_BIN_COUNT = 120;
+const SCATTER_SAMPLE_STRIDE = 10;
+const POLAR_SAMPLE_STRIDE = 5;
+const SCATTER_UNIT_RADIUS = 0.92;
+const SCATTER_POINT_ALPHA = 0.65;
+const SCATTER_DRAW_ALPHA = 0.62;
+const POLAR_SAMPLE_DRAW_ALPHA = 0.78;
+const POLAR_SAMPLE_ACC_BG = "#111111";
+/** Extra label size (pt-equivalent, scaled by dpr) for semicircle sound-field grid. */
+const SOUND_FIELD_LABEL_PT_BOOST = 3;
+/** Polar Level: no neighbor spread (avoids pre-ballistics smear). */
+const POLAR_LEVEL_NEIGHBOR_MIX = 0;
 
-interface GonioPoint {
-  x: number;
-  y: number;
+interface LissajousPoint {
+  s: number;
+  m: number;
   alpha: number;
 }
 
+const FIELD_MODE_LABEL: Record<SoundFieldMode, string> = {
+  polarSample: "Polar Sample",
+  polarLevel: "Polar Level",
+  lissajous: "Lissajous",
+};
+
 export default class GoniometerComponent extends Component {
-  private _container: HTMLElement;
   private _canvasWrap: HTMLElement;
+  private _fieldTag: HTMLElement;
   private _canvas: HTMLCanvasElement;
   private _corrFill: HTMLElement;
   private _corrText: HTMLElement;
@@ -31,7 +74,18 @@ export default class GoniometerComponent extends Component {
   private _bufR: Float32Array = new Float32Array(2048);
   private _mixL: Float32Array = new Float32Array(2048);
   private _mixR: Float32Array = new Float32Array(2048);
-  private _points: GonioPoint[] = [];
+  private _lissajouPoints: LissajousPoint[] = [];
+  private _polarSampleAcc: HTMLCanvasElement | null = null;
+  private _polarSampleAccCtx: CanvasRenderingContext2D | null = null;
+  private _polarInstant: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarScratch: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarRms: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarPeak: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarSampleInstant: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarSampleScratch: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarSampleRms: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarSamplePeak: Float32Array = new Float32Array(POLAR_BIN_COUNT);
+  private _polarDisplayScale = 0;
 
   constructor(
     containerEl: HTMLElement,
@@ -41,12 +95,14 @@ export default class GoniometerComponent extends Component {
     super();
     this._playerService = playerService;
     this._analyzeSettingsService = analyzeSettingsService;
-    this._container = containerEl;
 
     containerEl.innerHTML = `
       <div class="goniometerComponent">
-        <div class="gonioCanvasWrap">
-          <canvas class="goniometer__canvas"></canvas>
+        <div class="gonioMain" title="Sound field (Polar Sample / Polar Level / Lissajous)">
+          <span class="gonioView__tag js-gonioFieldTag">Field</span>
+          <div class="gonioCanvasWrap">
+            <canvas class="goniometer__canvas"></canvas>
+          </div>
         </div>
         <div class="goniometer__info">
           <div class="goniometer__corrBar">
@@ -57,32 +113,183 @@ export default class GoniometerComponent extends Component {
       </div>`;
 
     this._canvasWrap = containerEl.querySelector(".gonioCanvasWrap");
-    this._canvas = containerEl.querySelector(".goniometer__canvas");
+    this._fieldTag = containerEl.querySelector(".js-gonioFieldTag");
+    this._canvas = this._canvasWrap.querySelector("canvas");
     this._corrFill = containerEl.querySelector(".goniometer__corrFill");
     this._corrText = containerEl.querySelector(".goniometer__corrText");
 
+    this._syncFieldTag();
+
     this._addEventlistener(playerService, EventType.UPDATE_IS_PLAYING, () => {
-      if (playerService.isPlaying) {
-        this._startRaf();
-      } else {
-        this._stopRaf();
+      if (!playerService.isPlaying) {
+        /* Freeze last frame like spectral analyzer; do not wipe buffers. */
+        this._drawFrame(false);
       }
+      this._syncRaf();
     });
 
-    if (playerService.isPlaying) this._startRaf();
+    this._addEventlistener(
+      analyzeSettingsService,
+      EventType.AS_UPDATE_LIVE_SOUND_FIELD_MODE,
+      () => {
+        this._clearPolarSampleState();
+        this._clearPolarLevelState();
+        this._syncFieldTag();
+        this._drawFrame(false);
+      },
+    );
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => this._drawFrame(false));
+      ro.observe(this._canvasWrap);
+      this._register({ dispose: () => ro.disconnect() });
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => this._drawFrame(false));
+    });
+
+    this._syncRaf();
   }
 
-  private _pointDecayPerFrame(): number {
-    return smoothingPctToDecay(
-      this._analyzeSettingsService.liveVisualSmoothingPct,
+  private _syncFieldTag() {
+    const mode = this._analyzeSettingsService.liveSoundFieldMode;
+    this._fieldTag.textContent = FIELD_MODE_LABEL[mode] ?? "Field";
+  }
+
+  private _fieldDecay(): number {
+    return scatterAlphaDecayFromReleaseDbPerSec(
+      this._analyzeSettingsService.livePolarFieldReleaseDbPerSec,
     );
+  }
+
+  private _fieldFadeOverlayAlpha(): number {
+    return scatterFadeOverlayAlphaFromReleaseDbPerSec(
+      this._analyzeSettingsService.livePolarFieldReleaseDbPerSec,
+    );
+  }
+
+  private _ensurePolarSampleAcc(w: number, h: number): CanvasRenderingContext2D | null {
+    if (!this._polarSampleAcc) {
+      this._polarSampleAcc = document.createElement("canvas");
+      this._polarSampleAccCtx = this._polarSampleAcc.getContext("2d");
+    }
+    const acc = this._polarSampleAcc;
+    const accCtx = this._polarSampleAccCtx;
+    if (!acc || !accCtx) return null;
+    if (acc.width !== w || acc.height !== h) {
+      acc.width = w;
+      acc.height = h;
+      accCtx.fillStyle = POLAR_SAMPLE_ACC_BG;
+      accCtx.fillRect(0, 0, w, h);
+    }
+    return accCtx;
+  }
+
+  private _clearPolarSampleState(): void {
+    this._polarSampleRms.fill(0);
+    this._polarSamplePeak.fill(0);
+    if (this._polarSampleAccCtx && this._polarSampleAcc) {
+      this._polarSampleAccCtx.fillStyle = POLAR_SAMPLE_ACC_BG;
+      this._polarSampleAccCtx.fillRect(
+        0,
+        0,
+        this._polarSampleAcc.width,
+        this._polarSampleAcc.height,
+      );
+    }
+  }
+
+  /** Ballistics + display scale carry over between sessions; clear so Polar Level starts from zero. */
+  private _clearPolarLevelState(): void {
+    this._polarInstant.fill(0);
+    this._polarScratch.fill(0);
+    this._polarRms.fill(0);
+    this._polarPeak.fill(0);
+    this._polarDisplayScale = 0;
+  }
+
+  private _fadePolarSampleAcc(
+    accCtx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+  ): void {
+    const fadeAlpha = this._fieldFadeOverlayAlpha();
+    accCtx.fillStyle = `rgba(17, 17, 17, ${fadeAlpha})`;
+    accCtx.fillRect(0, 0, w, h);
+  }
+
+  private _stampPolarSampleAcc(
+    accCtx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    dpr: number,
+    fftSize: number,
+    gamma: number,
+    fillBrightnessPct: number,
+  ): void {
+    const dot = Math.max(1, 1.1 * dpr);
+    const half = dot * 0.5;
+    const pathIn = new Path2D();
+    const pathOut = new Path2D();
+
+    for (let i = 0; i < fftSize; i += POLAR_SAMPLE_STRIDE) {
+      const L = this._mixL[i];
+      const R = this._mixR[i];
+      const mag = Math.hypot(L, R);
+      if (mag < 1e-9) continue;
+      const theta = stereoFieldAngleRad(L, R);
+      const smoothMag = interpolatePolarRmsAtAngle(this._polarSampleRms, theta);
+      if (smoothMag < 1e-9) continue;
+      const r = polarSampleDisplayRadius(smoothMag, gamma);
+      const { x, y } = polarFieldCanvasXY(cx, cy, radius, theta, r);
+      if (y > cy + 0.5) continue;
+      const path = isInPhaseStereoAngle(theta) ? pathIn : pathOut;
+      path.rect(x - half, y - half, dot, dot);
+    }
+
+    const drawAlpha = polarSampleFillAlpha(
+      POLAR_SAMPLE_DRAW_ALPHA,
+      fillBrightnessPct,
+    );
+    const inAlpha = polarSampleFillAlpha(0.9, fillBrightnessPct);
+    const outAlpha = polarSampleFillAlpha(0.85, fillBrightnessPct);
+
+    accCtx.save();
+    /* No glow — only cyan / orange RMS-positioned dots. */
+    accCtx.shadowBlur = 0;
+    accCtx.globalAlpha = drawAlpha;
+    accCtx.fillStyle = `rgba(0, 180, 216, ${inAlpha})`;
+    accCtx.fill(pathIn);
+    accCtx.fillStyle = `rgba(255, 152, 0, ${outAlpha})`;
+    accCtx.fill(pathOut);
+    accCtx.restore();
+  }
+
+  private _canvasReady(wrap: HTMLElement): boolean {
+    return (
+      wrap.clientWidth >= MIN_CANVAS_CSS && wrap.clientHeight >= MIN_CANVAS_CSS
+    );
+  }
+
+  private _syncRaf() {
+    if (this._playerService.isPlaying) {
+      this._startRaf();
+    } else {
+      this._stopRaf();
+    }
   }
 
   private _startRaf() {
     if (this._rafId) return;
     const loop = () => {
-      this._tick();
-      this._rafId = requestAnimationFrame(loop);
+      this._drawFrame(true);
+      if (this._playerService.isPlaying) {
+        this._rafId = requestAnimationFrame(loop);
+      } else {
+        this._rafId = 0;
+      }
     };
     this._rafId = requestAnimationFrame(loop);
   }
@@ -94,9 +301,40 @@ export default class GoniometerComponent extends Component {
     }
   }
 
-  private _tick() {
+  private _decayPointAlpha<T extends { alpha: number }>(
+    points: T[],
+    decay: number,
+  ): void {
+    let writeIdx = 0;
+    for (let i = 0; i < points.length; i++) {
+      points[i].alpha *= decay;
+      if (points[i].alpha >= ALPHA_MIN) {
+        points[writeIdx++] = points[i];
+      }
+    }
+    points.length = writeIdx;
+  }
+
+  private _pushSideMidPoint(
+    buf: LissajousPoint[],
+    L: number,
+    R: number,
+    alpha: number,
+  ) {
+    const s = (L - R) / Math.SQRT2;
+    const m = (L + R) / Math.SQRT2;
+    const mag = Math.hypot(s, m);
+    if (mag <= SCATTER_UNIT_RADIUS) {
+      buf.push({ s, m, alpha });
+    } else {
+      const scale = SCATTER_UNIT_RADIUS / mag;
+      buf.push({ s: s * scale, m: m * scale, alpha });
+    }
+  }
+
+  private _updateAudioData() {
     const analysers = this._playerService.getAnalysers();
-    if (!analysers) return;
+    if (!analysers || !this._playerService.isPlaying) return;
 
     const fftSize = analysers.left.fftSize;
     if (this._bufL.length !== fftSize) {
@@ -116,54 +354,166 @@ export default class GoniometerComponent extends Component {
       this._mixR,
     );
 
-    const decay = this._pointDecayPerFrame();
-
-    for (let i = 0; i < fftSize; i++) {
-      const L = this._mixL[i];
-      const R = this._mixR[i];
-      this._points.push({
-        x: (L + R) / Math.SQRT2,
-        y: (L - R) / Math.SQRT2,
-        alpha: 1.0,
-      });
+    if (!this._canvasReady(this._canvasWrap)) {
+      return;
     }
 
-    let writeIdx = 0;
-    for (let i = 0; i < this._points.length; i++) {
-      this._points[i].alpha *= decay;
-      if (this._points[i].alpha >= ALPHA_MIN) {
-        this._points[writeIdx++] = this._points[i];
+    const fieldDecay = this._fieldDecay();
+    const fieldReleaseDbPerSec =
+      this._analyzeSettingsService.livePolarFieldReleaseDbPerSec;
+    const gateFloorRatio =
+      this._analyzeSettingsService.livePolarLevelGatePct / 100;
+    const mode = this._analyzeSettingsService.liveSoundFieldMode;
+
+    if (mode === "lissajous") {
+      for (let i = 0; i < fftSize; i += SCATTER_SAMPLE_STRIDE) {
+        this._pushSideMidPoint(
+          this._lissajouPoints,
+          this._mixL[i],
+          this._mixR[i],
+          SCATTER_POINT_ALPHA,
+        );
+      }
+      this._decayPointAlpha(this._lissajouPoints, fieldDecay);
+      if (this._lissajouPoints.length > MAX_BUFFER_POINTS) {
+        this._lissajouPoints.splice(
+          0,
+          this._lissajouPoints.length - MAX_BUFFER_POINTS,
+        );
       }
     }
-    this._points.length = writeIdx;
 
-    if (this._points.length > MAX_BUFFER_POINTS) {
-      this._points.splice(0, this._points.length - MAX_BUFFER_POINTS);
+    if (mode === "polarSample") {
+      const sized = this._resizeCanvas(this._canvas, this._canvasWrap);
+      if (!sized) return;
+      const { w, h, dpr } = sized;
+      const accCtx = this._ensurePolarSampleAcc(w, h);
+      if (!accCtx) return;
+
+      computeInstantPolarBins(
+        this._mixL,
+        this._mixR,
+        this._polarSampleInstant,
+        POLAR_SAMPLE_STRIDE,
+        POLAR_LEVEL_NEIGHBOR_MIX,
+      );
+      shapePolarInstantForBallistics(
+        this._polarSampleInstant,
+        this._polarSampleScratch,
+        gateFloorRatio,
+      );
+      updatePolarRmsPeak(
+        this._polarSampleInstant,
+        this._polarSampleRms,
+        this._polarSamplePeak,
+        emaDecayFromReleaseDbPerSec(fieldReleaseDbPerSec),
+        peakFallDbPerFrameFromRelease(fieldReleaseDbPerSec),
+      );
+
+      const gamma = this._analyzeSettingsService.livePolarSampleRadiusGamma;
+      const fillBrightnessPct =
+        this._analyzeSettingsService.livePolarSampleFillBrightnessPct;
+      const { cx, cy, radius } = this._semicircleLayout(w, h, dpr);
+      this._fadePolarSampleAcc(accCtx, w, h);
+      this._stampPolarSampleAcc(
+        accCtx,
+        cx,
+        cy,
+        radius,
+        dpr,
+        fftSize,
+        gamma,
+        fillBrightnessPct,
+      );
     }
 
-    this._draw();
+    if (mode === "polarLevel") {
+      computeInstantPolarBins(
+        this._mixL,
+        this._mixR,
+        this._polarInstant,
+        2,
+        POLAR_LEVEL_NEIGHBOR_MIX,
+      );
+      shapePolarInstantForBallistics(
+        this._polarInstant,
+        this._polarScratch,
+        gateFloorRatio,
+      );
+      const rmsDecay = emaDecayFromReleaseDbPerSec(fieldReleaseDbPerSec);
+      const peakFallDf = peakFallDbPerFrameFromRelease(fieldReleaseDbPerSec);
+      updatePolarRmsPeak(
+        this._polarInstant,
+        this._polarRms,
+        this._polarPeak,
+        rmsDecay,
+        peakFallDf,
+      );
+
+      this._polarDisplayScale = updatePolarDisplayScale(
+        this._polarDisplayScale,
+        this._polarRms,
+        this._polarPeak,
+        polarLevelDisplayScaleDecay(fieldReleaseDbPerSec),
+      );
+    }
+
     this._updateCorrelation();
   }
 
-  private _draw() {
+  private _drawFrame(updateAudio: boolean) {
+    if (updateAudio) this._updateAudioData();
+    this._drawSoundField();
+    if (!updateAudio && this._mixL.length > 0) {
+      this._updateCorrelation();
+    }
+  }
+
+  private _resizeCanvas(
+    canvas: HTMLCanvasElement,
+    wrap: HTMLElement,
+  ): { w: number; h: number; dpr: number; ctx: CanvasRenderingContext2D } | null {
+    if (!this._canvasReady(wrap)) return null;
+
     const dpr = window.devicePixelRatio || 1;
-    const cssW = Math.max(1, Math.floor(this._canvasWrap.clientWidth));
-    const cssH = Math.max(1, Math.floor(this._canvasWrap.clientHeight));
+    const cssW = Math.floor(wrap.clientWidth);
+    const cssH = Math.floor(wrap.clientHeight);
     const w = Math.min(MAX_CANVAS_PX, Math.max(1, Math.round(cssW * dpr)));
     const h = Math.min(MAX_CANVAS_PX, Math.max(1, Math.round(cssH * dpr)));
-    if (this._canvas.width !== w || this._canvas.height !== h) {
-      this._canvas.width = w;
-      this._canvas.height = h;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
     }
-    const ctx = this._canvas.getContext("2d");
-    if (!ctx) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    return { w, h, dpr, ctx };
+  }
 
+  private _circularLayout(w: number, h: number, dpr: number) {
+    const pad = 14 * dpr;
     const cx = w / 2;
     const cy = h / 2;
-    const radius = Math.min(cx, cy) * 0.9;
+    const radius = Math.min(cx - pad, cy - pad) * SCATTER_UNIT_RADIUS;
+    return { cx, cy, radius, pad };
+  }
 
-    ctx.fillStyle = "#111111";
-    ctx.fillRect(0, 0, w, h);
+  private _semicircleLayout(w: number, h: number, dpr: number) {
+    const pad = 14 * dpr;
+    const cx = w / 2;
+    const cy = h - pad;
+    const radius = Math.min(cx - pad, cy - pad) * SCATTER_UNIT_RADIUS;
+    return { cx, cy, radius, pad };
+  }
+
+  private _drawCircularMsGrid(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    dpr: number,
+  ) {
+    const labelFs = Math.max(9, 10 * dpr);
+    const font = `${labelFs}px var(--vscode-editor-font-family, monospace)`;
 
     ctx.strokeStyle = "rgba(255,255,255,0.12)";
     ctx.lineWidth = 1;
@@ -182,28 +532,230 @@ export default class GoniometerComponent extends Component {
     ctx.lineTo(cx, cy + radius);
     ctx.stroke();
 
-    ctx.strokeStyle = "rgba(255,255,255,0.3)";
-    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
     ctx.beginPath();
-    ctx.moveTo(cx - radius, cy + radius);
-    ctx.lineTo(cx + radius, cy - radius);
-    ctx.moveTo(cx - radius, cy - radius);
-    ctx.lineTo(cx + radius, cy + radius);
+    ctx.moveTo(cx - radius * 0.707, cy - radius * 0.707);
+    ctx.lineTo(cx + radius * 0.707, cy + radius * 0.707);
+    ctx.moveTo(cx + radius * 0.707, cy - radius * 0.707);
+    ctx.lineTo(cx - radius * 0.707, cy + radius * 0.707);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    for (const pt of this._points) {
-      const px = cx + pt.x * radius;
-      const py = cy - pt.y * radius;
-      ctx.globalAlpha = pt.alpha;
-      ctx.fillStyle = "#00e5ff";
-      ctx.fillRect(px - 0.75, py - 0.75, 1.5, 1.5);
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.font = font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText("M", cx, cy - radius - 3 * dpr);
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "right";
+    ctx.fillText("L", cx - radius * 0.78 - 4 * dpr, cy - radius * 0.78);
+    ctx.textAlign = "left";
+    ctx.fillText("R", cx + radius * 0.78 + 4 * dpr, cy - radius * 0.78);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText("−S", cx - radius - 2 * dpr, cy + 4 * dpr);
+    ctx.fillText("+S", cx + radius + 2 * dpr, cy + 4 * dpr);
+  }
+
+  private _soundFieldLabelFont(dpr: number, secondary = false): string {
+    const basePt = secondary ? 9 : 10;
+    const pt = basePt + SOUND_FIELD_LABEL_PT_BOOST;
+    const fs = Math.max(pt - 1, pt * dpr);
+    return `${fs}px var(--vscode-editor-font-family, monospace)`;
+  }
+
+  private _drawSoundFieldGridSemicircleLines(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    dpr: number,
+  ) {
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    for (const r of [0.25, 0.5, 0.75, 1.0]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * r, Math.PI, 0);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = "rgba(255,255,255,0.28)";
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    for (const theta of [Math.PI / 4, (3 * Math.PI) / 4]) {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + radius * Math.cos(theta), cy - radius * Math.sin(theta));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.beginPath();
+    ctx.moveTo(cx - radius, cy);
+    ctx.lineTo(cx + radius, cy);
+    ctx.stroke();
+  }
+
+  private _drawSoundFieldGridSemicircleLabels(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    dpr: number,
+  ) {
+    const labelInset = 10 * dpr;
+    const lTip = polarFieldCanvasXY(cx, cy, radius, (3 * Math.PI) / 4, 1);
+    const rTip = polarFieldCanvasXY(cx, cy, radius, Math.PI / 4, 1);
+
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.font = this._soundFieldLabelFont(dpr);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("L", lTip.x - labelInset * 0.5, lTip.y - labelInset * 0.3);
+    ctx.fillText("R", rTip.x + labelInset * 0.5, rTip.y - labelInset * 0.3);
+    ctx.textBaseline = "bottom";
+    ctx.fillText("M", cx, cy - radius - 2 * dpr);
+    ctx.textBaseline = "top";
+    ctx.font = this._soundFieldLabelFont(dpr, true);
+    ctx.fillStyle = "rgba(255,255,255,0.28)";
+    ctx.fillText("−OOP", cx - radius + labelInset, cy + 3 * dpr);
+    ctx.fillText("+OOP", cx + radius - labelInset * 2, cy + 3 * dpr);
+  }
+
+  private _drawSoundFieldGridSemicircle(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    dpr: number,
+  ) {
+    this._drawSoundFieldGridSemicircleLines(ctx, cx, cy, radius, dpr);
+    this._drawSoundFieldGridSemicircleLabels(ctx, cx, cy, radius, dpr);
+  }
+
+  private _drawSoundField() {
+    const sized = this._resizeCanvas(this._canvas, this._canvasWrap);
+    if (!sized) return;
+    const { w, h, dpr, ctx } = sized;
+    const mode = this._analyzeSettingsService.liveSoundFieldMode;
+
+    ctx.fillStyle = "#111111";
+    ctx.fillRect(0, 0, w, h);
+
+    if (mode === "lissajous") {
+      const { cx, cy, radius } = this._circularLayout(w, h, dpr);
+      this._drawCircularMsGrid(ctx, cx, cy, radius, dpr);
+      ctx.save();
+      clipCircle(ctx, cx, cy, radius);
+      this._drawLissajous(ctx, cx, cy, radius, dpr);
+      ctx.restore();
+      return;
+    }
+
+    const { cx, cy, radius } = this._semicircleLayout(w, h, dpr);
+    this._drawSoundFieldGridSemicircle(ctx, cx, cy, radius, dpr);
+
+    ctx.save();
+    clipUpperSemicircle(ctx, cx, cy, radius);
+
+    if (mode === "polarSample") {
+      this._ensurePolarSampleAcc(w, h);
+      this._drawPolarSample(ctx, w, h);
+      this._drawSoundFieldGridSemicircleLines(ctx, cx, cy, radius, dpr);
+      this._drawSoundFieldGridSemicircleLabels(ctx, cx, cy, radius, dpr);
+    } else {
+      this._drawPolarLevel(ctx, cx, cy, radius, dpr);
+    }
+
+    ctx.restore();
+
+    ctx.fillStyle = "#111111";
+    ctx.fillRect(0, cy + 1, w, h - cy);
+
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2 * dpr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  private _drawPolarSample(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+  ) {
+    if (!this._polarSampleAcc) return;
+    ctx.drawImage(this._polarSampleAcc, 0, 0, w, h);
+  }
+
+  private _drawLissajous(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    dpr: number,
+  ) {
+    const dot = Math.max(1, 1.1 * dpr);
+    for (const pt of this._lissajouPoints) {
+      const px = cx - pt.s * radius;
+      const py = cy - pt.m * radius;
+      const radial = Math.min(1, Math.hypot(pt.s, pt.m) / SCATTER_UNIT_RADIUS);
+      ctx.globalAlpha =
+        pt.alpha * SCATTER_DRAW_ALPHA * (0.75 + 0.25 * radial);
+      ctx.fillStyle = "rgba(0, 180, 216, 0.9)";
+      ctx.fillRect(px - dot * 0.5, py - dot * 0.5, dot, dot);
     }
     ctx.globalAlpha = 1;
   }
 
+  private _drawPolarLevel(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    radius: number,
+    dpr: number,
+  ) {
+    const norm = polarLevelDrawNorm(
+      this._polarDisplayScale,
+      this._polarRms,
+      this._polarPeak,
+    );
+    if (norm <= 0) return;
+
+    const toXY = (theta: number, lenPx: number) =>
+      polarFieldCanvasXY(cx, cy, radius, theta, lenPx / radius);
+
+    const radialLen = (value: number) =>
+      polarLevelDrawLength(value, norm) * radius;
+
+    const bottomY = cy;
+
+    const rmsGradient = ctx.createLinearGradient(0, cy - radius, 0, cy);
+    rmsGradient.addColorStop(0, "rgba(24,198,232,0.62)");
+    rmsGradient.addColorStop(1, "rgba(12,140,198,0.22)");
+
+    ctx.fillStyle = rmsGradient;
+    ctx.beginPath();
+    ctx.moveTo(toXY(polarBinToAngleRad(0, POLAR_BIN_COUNT), 0).x, bottomY);
+    for (let i = 0; i < POLAR_BIN_COUNT; i++) {
+      const theta = polarBinToAngleRad(i, POLAR_BIN_COUNT);
+      const len = radialLen(this._polarRms[i]);
+      const p = toXY(theta, len);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.lineTo(
+      toXY(polarBinToAngleRad(POLAR_BIN_COUNT - 1, POLAR_BIN_COUNT), 0).x,
+      bottomY,
+    );
+    ctx.closePath();
+    ctx.fill();
+  }
+
   private _updateCorrelation() {
     const n = this._mixL.length;
+    if (n < 1) return;
+
     let sumLR = 0;
     let sumL2 = 0;
     let sumR2 = 0;

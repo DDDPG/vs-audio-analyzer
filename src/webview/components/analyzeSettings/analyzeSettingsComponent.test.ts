@@ -408,35 +408,75 @@ describe("analyzeSettingsComponent", () => {
       expect(sel.value).toBe("2048");
     });
 
-    test("live visual smoothing range updates service and label", () => {
+    test("live spectrum release slider updates service and label", () => {
       const range = <HTMLInputElement>document.querySelector(
-        ".js-analyzeSetting-liveVisualSmoothingPct",
+        ".js-analyzeSetting-liveSpectrumReleaseDbPerSec",
       );
       const label = document.querySelector(
-        ".js-analyzeSetting-liveVisualSmoothingPctLabel",
+        ".js-analyzeSetting-liveSpectrumReleaseDbPerSecLabel",
       );
-      expect(range.value).toBe("35");
-      expect(label?.textContent).toBe("35");
-      range.value = "60";
+      expect(range.value).toBe("8");
+      expect(label?.textContent).toBe("8.0 dB/s");
+      range.value = "12";
       range.dispatchEvent(new Event(EventType.INPUT));
-      expect(analyzeSettingsService.liveVisualSmoothingPct).toBe(60);
-      expect(label?.textContent).toBe("60");
+      expect(analyzeSettingsService.liveSpectrumReleaseDbPerSec).toBe(12);
+      expect(label?.textContent).toBe("12.0 dB/s");
     });
 
-    test("live visual smoothing UI syncs from AS_UPDATE_LIVE_VISUAL_SMOOTHING", () => {
+    test("live spectrum peak hold slider updates service and label", () => {
       const range = <HTMLInputElement>document.querySelector(
-        ".js-analyzeSetting-liveVisualSmoothingPct",
+        ".js-analyzeSetting-liveSpectrumPeakHoldSec",
       );
       const label = document.querySelector(
-        ".js-analyzeSetting-liveVisualSmoothingPctLabel",
+        ".js-analyzeSetting-liveSpectrumPeakHoldSecLabel",
+      );
+      expect(range.value).toBe("0");
+      expect(label?.textContent).toBe("0.00 s");
+      range.value = "1.05";
+      range.dispatchEvent(new Event(EventType.INPUT));
+      expect(analyzeSettingsService.liveSpectrumPeakHoldSec).toBe(1.05);
+      expect(label?.textContent).toBe("1.05 s");
+    });
+
+    test("live spectrum peak hold UI syncs from AS_UPDATE_LIVE_SPECTRUM_PEAK_HOLD", () => {
+      const range = <HTMLInputElement>document.querySelector(
+        ".js-analyzeSetting-liveSpectrumPeakHoldSec",
+      );
+      const label = document.querySelector(
+        ".js-analyzeSetting-liveSpectrumPeakHoldSecLabel",
       );
       analyzeSettingsService.dispatchEvent(
-        new CustomEvent(EventType.AS_UPDATE_LIVE_VISUAL_SMOOTHING, {
-          detail: { value: 10 },
+        new CustomEvent(EventType.AS_UPDATE_LIVE_SPECTRUM_PEAK_HOLD, {
+          detail: { value: 2 },
         }),
       );
-      expect(range.value).toBe("10");
-      expect(label?.textContent).toBe("10");
+      expect(range.value).toBe("2");
+      expect(label?.textContent).toBe("2.00 s");
+    });
+
+    test("live spectrum release UI syncs from AS_UPDATE_LIVE_SPECTRUM_SMOOTHING", () => {
+      const range = <HTMLInputElement>document.querySelector(
+        ".js-analyzeSetting-liveSpectrumReleaseDbPerSec",
+      );
+      const label = document.querySelector(
+        ".js-analyzeSetting-liveSpectrumReleaseDbPerSecLabel",
+      );
+      analyzeSettingsService.dispatchEvent(
+        new CustomEvent(EventType.AS_UPDATE_LIVE_SPECTRUM_SMOOTHING, {
+          detail: { value: 24 },
+        }),
+      );
+      expect(range.value).toBe("24");
+      expect(label?.textContent).toBe("24.0 dB/s");
+    });
+
+    test("sound field mode select updates service", () => {
+      const sel = <HTMLSelectElement>document.querySelector(
+        ".js-analyzeSetting-liveSoundFieldMode",
+      );
+      sel.value = "polarSample";
+      sel.dispatchEvent(new Event(EventType.CHANGE));
+      expect(analyzeSettingsService.liveSoundFieldMode).toBe("polarSample");
     });
 
     test("live spectrum tilt select updates service", () => {

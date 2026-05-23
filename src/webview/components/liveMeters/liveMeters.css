@@ -15,6 +15,8 @@
   --gonioMeter-grid:           rgba(255,255,255,0.12);
   --gonioMeter-axis:           rgba(255,255,255,0.3);
   --gonioMeter-point:          #00e5ff;
+  --gonioMeter-beam-inphase:   rgba(0, 229, 255, 0.85);
+  --gonioMeter-beam-oophase:   rgba(255, 152, 0, 0.85);
   --gonioMeter-corr-negative:  #f44336;
   --gonioMeter-corr-positive:  #4caf50;
 
@@ -123,6 +125,10 @@
 
 .graphDeck__pane--edit {
   min-height: 12rem;
+}
+
+.graphDeck__pane--loudness {
+  min-height: min(20vh, 252px);
 }
 
 .graphDeck__pane[hidden] {
@@ -266,6 +272,21 @@
   background: var(--meter-bg);
 }
 
+.meterColumnResizeHandle {
+  flex: 0 0 6px;
+  align-self: stretch;
+  cursor: ew-resize;
+  background: transparent;
+}
+
+.meterColumnResizeHandle:hover {
+  background: color-mix(in srgb, var(--vscode-focusBorder) 40%, transparent);
+}
+
+.meterColumnResizeHandle[hidden] {
+  display: none !important;
+}
+
 /* ── Level meter component ────────────────────────────────────────────────── */
 .levelMeterComponent {
   display: flex;
@@ -372,6 +393,22 @@
   background: var(--meter-clip-color);
 }
 
+.levelMeter__clipReadout {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 3;
+  font-size: 8px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--meter-clip-color);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  text-shadow:
+    0 0 3px rgba(0, 0, 0, 0.95),
+    0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
 /* ── Live analysis component ──────────────────────────────────────────────── */
 .liveAnalysisComponent {
   display: flex;
@@ -447,6 +484,29 @@
   background: var(--gonioMeter-bg);
 }
 
+.gonioMain {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.gonioView__tag {
+  position: absolute;
+  top: 3px;
+  left: 5px;
+  z-index: 2;
+  font-size: 9px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .gonioCanvasWrap {
   flex: 1 1 0;
   min-height: 0;
@@ -507,9 +567,7 @@
 }
 
 .spectralAnalyzer__hoverReadout {
-  position: absolute;
-  left: 30px;
-  top: 8px;
+  position: fixed;
   z-index: 4;
   pointer-events: none;
   font-family: var(--vscode-editor-font-family, monospace);
@@ -519,7 +577,7 @@
   text-shadow:
     0 0 4px rgba(0, 0, 0, 0.95),
     0 1px 2px rgba(0, 0, 0, 0.9);
-  max-width: min(220px, calc(100% - 40px));
+  max-width: min(220px, calc(100vw - 40px));
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -536,7 +594,7 @@
   flex-direction: row;
   align-items: center;
   gap: 4px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   padding: 2px 0;
   font-size: 11px;
   color: var(--vscode-descriptionForeground, rgba(255,255,255,0.7));
@@ -594,4 +652,17 @@
 .liveMonitoringBar__btn--active {
   background: var(--vscode-button-background, #0e639c) !important;
   color: var(--vscode-button-foreground, #fff) !important;
+}
+
+/** Force band row wrap under channel / swap controls */
+.liveMonitoringBar__break {
+  flex-basis: 100%;
+  height: 0;
+}
+
+.liveMonitoringBar__bands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
 }

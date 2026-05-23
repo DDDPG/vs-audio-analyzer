@@ -1,12 +1,84 @@
 /** Stereo monitoring path for live meters / headphone matrix (linear). */
-export type LiveMonitoringMode = "lr" | "l" | "r" | "m" | "s";
+export type LiveMonitoringMode = "lr" | "swap" | "l" | "r" | "m" | "s";
 
-/** Gains from (L,R) analyser outputs to (outL, outR) merger inputs: out = M * in. */
+/** Five octave-ish bands configurable via edges (see AnalyzeSettingsService). */
+export type MonitorBandId = "sub" | "low" | "lowMid" | "highMid" | "high";
+
+export const MONITOR_BAND_IDS: readonly MonitorBandId[] = [
+  "sub",
+  "low",
+  "lowMid",
+  "highMid",
+  "high",
+] as const;
+
+export const MONITOR_BAND_COUNT = MONITOR_BAND_IDS.length;
+
+/** All five bits set (“every band”) or empty mask ⇒ no filtering (listen full bandwidth). */
+export const MONITOR_BAND_MASK_ALL = (1 << MONITOR_BAND_COUNT) - 1;
+
+export function populationCountBits(mask: number): number {
+  let m = mask >>> 0;
+  let n = 0;
+  while (m) {
+    n += m & 1;
+    m >>>= 1;
+  }
+  return n;
+}
+
+export function monitorBandSoloBypassActive(mask: number): boolean {
+  const m = (mask ?? 0) & MONITOR_BAND_MASK_ALL;
+  const c = populationCountBits(m);
+  return c === 0 || c === MONITOR_BAND_COUNT;
+}
+
+/**
+ * Clamp / sort six ascending edges (Hz): band i spans [edges[i], edges[i+1]].
+ * upper bound clamps to Nyquist-ish for Web Audio stability.
+ */
+export function sanitizeMonitorBandEdges(
+  raw: readonly number[] | undefined,
+  sampleRate: number,
+): number[] {
+  const nyHi = Math.max(22050, Math.min(sampleRate / 2, sampleRate * 0.496));
+  const loLim = 10;
+  const fallback = [20, 60, 240, 900, 5000, nyHi];
+  const e: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    const v = raw && raw.length > i ? Number(raw[i]) : fallback[i];
+    e.push(Number.isFinite(v) ? v : fallback[i]);
+  }
+  for (let i = 0; i < 6; i++) {
+    e[i] = Math.min(nyHi, Math.max(loLim, e[i]));
+  }
+  for (let i = 1; i < 6; i++) {
+    if (e[i] <= e[i - 1]) {
+      e[i] = Math.min(nyHi, e[i - 1] + 10);
+    }
+  }
+  e[5] = Math.min(e[5], nyHi);
+  if (e[5] <= e[4]) {
+    e[5] = Math.min(nyHi, e[4] + 10);
+  }
+  return e;
+}
+
 export interface MonitoringGains {
   ll: number;
   lr: number;
   rl: number;
   rr: number;
+}
+
+/** Swap headphone L/R taps after solo/mode matrix (`outL ⇄ outR`). */
+export function composeSwapAfter(base: MonitoringGains): MonitoringGains {
+  return {
+    ll: base.lr,
+    lr: base.ll,
+    rl: base.rr,
+    rr: base.rl,
+  };
 }
 
 export function monitoringGainsForMode(mode: LiveMonitoringMode): MonitoringGains {
@@ -19,6 +91,8 @@ export function monitoringGainsForMode(mode: LiveMonitoringMode): MonitoringGain
       return { ll: 0.5, lr: 0.5, rl: 0.5, rr: 0.5 };
     case "s":
       return { ll: 0.5, lr: -0.5, rl: -0.5, rr: 0.5 };
+    case "swap":
+      return composeSwapAfter({ ll: 1, lr: 0, rl: 0, rr: 1 });
     case "lr":
     default:
       return { ll: 1, lr: 0, rl: 0, rr: 1 };
@@ -95,10 +169,4 @@ export function encodeMidSideTimeDomain(
     outM[i] = 0.5 * (L + R);
     outS[i] = 0.5 * (L - R);
   }
-}
-
-/** Map UI smoothing 0..100 to exponential decay per animation frame (~60fps). */
-export function smoothingPctToDecay(pct: number): number {
-  const t = Math.max(0, Math.min(100, pct)) / 100;
-  return 0.78 + t * 0.21;
 }

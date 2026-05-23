@@ -3,6 +3,8 @@ export interface Config {
   playerDefault: PlayerDefault;
   analyzeDefault: AnalyzeDefault;
   fileExt?: string;
+  /** VS Code webview URI for `dist/loudness.worklet.js` (AudioWorklet module). */
+  loudnessWorkletUri?: string;
 }
 
 export interface PlayerDefault {
@@ -189,10 +191,47 @@ export interface AnalyzeDefault {
   liveAnalysisFftSize?: 512 | 1024 | 2048 | 4096;
 
   /**
-   * Live goniometer / spectrum visual smoothing (0 = jumpy, 100 = very slow).
-   * Maps to per-frame exponential decay. default: 35
+   * Live release rate (dB/s) for ballistics / trails. Higher = faster decay.
+   * Range 0.5–36 dB/s (log-mapped from legacy 0–100 pct). default: 8
+   * @deprecated Use per-module release fields below; kept for cache migration.
    */
   liveAnalysisVisualSmoothingPct?: number;
+
+  /** Live spectrum peak/RMS release (dB/s). default: 8 */
+  liveSpectrumReleaseDbPerSec?: number;
+
+  /**
+   * Peak envelope horizontal hold before release decay (seconds), live spectrum analyzer only.
+   * 0 = off (immediate decay). Typical UI range 0–3 in 0.05 s steps. default: 0
+   */
+  liveSpectrumPeakHoldSec?: number;
+
+  /** Sound-field polar / Lissajous trail release (dB/s). default: 8 */
+  livePolarFieldReleaseDbPerSec?: number;
+
+  /** Level meter RMS release (dB/s). default: 8 */
+  liveLevelMeterReleaseDbPerSec?: number;
+
+  /** @deprecated Migrated to {@link liveSpectrumReleaseDbPerSec}. */
+  liveSpectrumSmoothingPct?: number;
+
+  /** @deprecated Migrated to {@link livePolarFieldReleaseDbPerSec}. */
+  livePolarFieldSmoothingPct?: number;
+
+  /** @deprecated Migrated to {@link liveLevelMeterReleaseDbPerSec}. */
+  liveLevelMeterSmoothingPct?: number;
+
+  /** Polar Level directional gate (% of peak, 0 = off). default: 28 */
+  livePolarLevelGatePct?: number;
+
+  /** Polar Sample radial gamma (0.5–2, 1 = linear). default: 1 */
+  livePolarSampleRadiusGamma?: number;
+
+  /** Polar Sample scatter fill brightness boost (%). default: 10 */
+  livePolarSampleFillBrightnessPct?: number;
+
+  /** Sound-field vectorscope mode (Insight 2–style). default: polarLevel */
+  liveSoundFieldMode?: "polarSample" | "polarLevel" | "lissajous";
 
   /**
    * Spectrum analyzer display tilt (rolloff), dB per octave, applied vs 1 kHz anchor.
@@ -202,7 +241,20 @@ export interface AnalyzeDefault {
 
   /**
    * Live monitoring matrix: stereo path for headphones + live meters.
-   * "lr" default; "l"/"r"/"m"/"s" = solo left, right, mid, side (linear).
+   * "lr" = stereo L→L, R→R; "swap" = stereo with L/R outputs exchanged; other = solo MS/L/R.
    */
-  liveMonitoringMode?: "lr" | "l" | "r" | "m" | "s";
+  liveMonitoringMode?: "lr" | "swap" | "l" | "r" | "m" | "s";
+
+  /**
+   * @deprecated Hydration only — use {@link liveMonitoringMode} `"swap"`. Older UI cache may still emit this flag.
+   */
+  monitorStereoSwap?: boolean;
+
+  /**
+   * Six ascending Hz boundaries for five monitor-band solo paths: band i is `[edges[i],edges[i+1]]`.
+   */
+  monitorBandEdgesHz?: number[];
+
+  /** 5-bit bitmask of active bands; 0 or 0b11111 = full bandwidth (no extra filtering). */
+  monitorBandSoloMask?: number;
 }

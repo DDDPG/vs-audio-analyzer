@@ -3,15 +3,25 @@ import Component from "../../component";
 import PlayerService from "../../services/playerService";
 import AnalyzeSettingsService from "../../services/analyzeSettingsService";
 import {
+  emaDecayFromReleaseDbPerSec,
+} from "../../utils/liveBallistics";
+import {
   encodeMidSideTimeDomain,
-  smoothingPctToDecay,
+  applyMonitoringToTimeDomain,
   type LiveMonitoringMode,
 } from "../../utils/liveMonitoring";
+import { formatDbFs } from "../../services/loudnessService";
 
 const DB_MIN = -60;
-const DB_CLIP = 0;
+const DB_MAX = 6;
+/** Clip LED triggers at 0 dBFS even though the scale extends to +6 dBFS. */
+const DB_CLIP_THRESHOLD = 0;
 const PEAK_HOLD_FRAMES = 120;
-const TICKS: number[] = [0, -3, -6, -12, -18, -24, -36, -48, -60];
+const TICKS: number[] = [6, 0, -3, -6, -12, -18, -24, -36, -48, -60];
+
+function dbToNorm(db: number): number {
+  return Math.max(0, Math.min(1, (db - DB_MIN) / (DB_MAX - DB_MIN)));
+}
 
 const MAX_CANVAS_PX = 4096;
 
@@ -23,6 +33,8 @@ interface ChannelState {
   peakHold: number;
   peakHoldFrames: number;
   clipped: boolean;
+  /** Session maximum sample peak (dBFS) when above 0 dBFS. */
+  sessionMaxSamplePeakDbFs: number;
 }
 
 function formatDb(db: number): string {
@@ -51,12 +63,15 @@ export default class LevelMeterComponent extends Component {
   private _colA: Float32Array = new Float32Array(2048);
   private _colB: Float32Array = new Float32Array(2048);
   private _silence: Float32Array = new Float32Array(2048);
+  private _mixL: Float32Array = new Float32Array(2048);
+  private _mixR: Float32Array = new Float32Array(2048);
   private _stateL: ChannelState = {
     smoothedRms: DB_MIN,
     peakDb: DB_MIN,
     peakHold: DB_MIN,
     peakHoldFrames: 0,
     clipped: false,
+    sessionMaxSamplePeakDbFs: Number.NEGATIVE_INFINITY,
   };
   private _stateR: ChannelState = {
     smoothedRms: DB_MIN,
@@ -64,6 +79,7 @@ export default class LevelMeterComponent extends Component {
     peakHold: DB_MIN,
     peakHoldFrames: 0,
     clipped: false,
+    sessionMaxSamplePeakDbFs: Number.NEGATIVE_INFINITY,
   };
 
   /** L–R vs M–S column semantics (stereo only). Solo M/S forces M–S from monitor mode. */
@@ -102,7 +118,7 @@ export default class LevelMeterComponent extends Component {
           </div>
         </div>
         <div class="levelMeter__scaleCol" aria-hidden="true">
-          ${TICKS.map((db) => `<div class="levelMeter__tick" data-db="${db}"><span>${db === 0 ? "0" : String(db)}</span></div>`).join("")}
+          ${TICKS.map((db) => `<div class="levelMeter__tick" data-db="${db}"><span>${db > 0 ? `+${db}` : String(db)}</span></div>`).join("")}
         </div>
       </div>`;
 
@@ -120,10 +136,12 @@ export default class LevelMeterComponent extends Component {
 
     this._addEventlistener(this._clipLedL, "click", () => {
       this._stateL.clipped = false;
+      this._stateL.sessionMaxSamplePeakDbFs = Number.NEGATIVE_INFINITY;
       this._clipLedL.classList.remove("clipped");
     });
     this._addEventlistener(this._clipLedR, "click", () => {
       this._stateR.clipped = false;
+      this._stateR.sessionMaxSamplePeakDbFs = Number.NEGATIVE_INFINITY;
       this._clipLedR.classList.remove("clipped");
     });
 
@@ -164,7 +182,9 @@ export default class LevelMeterComponent extends Component {
   }
 
   private _rmsDecay(): number {
-    return smoothingPctToDecay(this._analyzeSettingsService.liveVisualSmoothingPct);
+    return emaDecayFromReleaseDbPerSec(
+      this._analyzeSettingsService.liveLevelMeterReleaseDbPerSec,
+    );
   }
 
   private _startRaf() {
@@ -195,6 +215,8 @@ export default class LevelMeterComponent extends Component {
     if (this._bufL.length !== fftSize) {
       this._bufL = new Float32Array(fftSize);
       this._bufR = new Float32Array(fftSize);
+      this._mixL = new Float32Array(fftSize);
+      this._mixR = new Float32Array(fftSize);
       this._colA = new Float32Array(fftSize);
       this._colB = new Float32Array(fftSize);
       this._silence = new Float32Array(fftSize);
@@ -202,6 +224,14 @@ export default class LevelMeterComponent extends Component {
 
     analysers.left.getFloatTimeDomainData(this._bufL);
     analysers.right.getFloatTimeDomainData(this._bufR);
+
+    applyMonitoringToTimeDomain(
+      this._analyzeSettingsService.liveMonitoringMode,
+      this._bufL,
+      this._bufR,
+      this._mixL,
+      this._mixR,
+    );
 
     const mon = this._analyzeSettingsService.liveMonitoringMode;
     const layout = this._effectiveLayout(mon);
@@ -216,24 +246,13 @@ export default class LevelMeterComponent extends Component {
     if (layout === "lr") {
       labelLeft = "L";
       labelRight = "R";
-      if (mon === "lr") {
-        srcLeft = this._bufL;
-        srcRight = this._bufR;
-      } else if (mon === "l") {
-        srcLeft = this._bufL;
-        srcRight = z;
-      } else if (mon === "r") {
-        srcLeft = z;
-        srcRight = this._bufR;
-      } else {
-        srcLeft = this._bufL;
-        srcRight = this._bufR;
-      }
+      srcLeft = this._mixL;
+      srcRight = this._mixR;
     } else {
       labelLeft = "M";
       labelRight = "S";
-      encodeMidSideTimeDomain(this._bufL, this._bufR, this._colA, this._colB);
-      if (mon === "lr") {
+      encodeMidSideTimeDomain(this._mixL, this._mixR, this._colA, this._colB);
+      if (mon === "lr" || mon === "swap") {
         srcLeft = this._colA;
         srcRight = this._colB;
       } else if (mon === "m") {
@@ -258,8 +277,12 @@ export default class LevelMeterComponent extends Component {
     const numsL = this._readoutL.querySelector(".levelMeter__readoutNums");
     const numsR = this._readoutR.querySelector(".levelMeter__readoutNums");
     if (numsL && numsR) {
-      numsL.innerHTML = `RMS ${formatDb(this._stateL.smoothedRms)}<br>Peak ${formatDb(this._stateL.peakDb)}`;
-      numsR.innerHTML = `RMS ${formatDb(this._stateR.smoothedRms)}<br>Peak ${formatDb(this._stateR.peakDb)}`;
+      numsL.innerHTML =
+        `RMS ${formatDb(this._stateL.smoothedRms)}<br>` +
+        `Peak ${formatDb(this._stateL.peakDb)}`;
+      numsR.innerHTML =
+        `RMS ${formatDb(this._stateR.smoothedRms)}<br>` +
+        `Peak ${formatDb(this._stateR.peakDb)}`;
     }
 
     this._draw(this._canvasL, this._wrapL, this._stateL);
@@ -300,9 +323,12 @@ export default class LevelMeterComponent extends Component {
       state.peakHold = state.peakHold * decay + DB_MIN * (1 - decay);
     }
 
-    if (peakDb >= DB_CLIP) {
+    if (peakDb >= DB_CLIP_THRESHOLD) {
       state.clipped = true;
       led.classList.add("clipped");
+      if (peakDb > state.sessionMaxSamplePeakDbFs) {
+        state.sessionMaxSamplePeakDbFs = peakDb;
+      }
     }
   }
 
@@ -327,20 +353,14 @@ export default class LevelMeterComponent extends Component {
     const barW = w;
     if (barW <= 0 || h <= 0) return;
 
-    const dbToY = (db: number) =>
-      h * (1 - Math.max(0, Math.min(1, (db - DB_MIN) / (DB_CLIP - DB_MIN))));
+    const dbToY = (db: number) => h * (1 - dbToNorm(db));
 
     const peakY = dbToY(state.peakDb);
     const gradient = ctx.createLinearGradient(0, h, 0, 0);
     gradient.addColorStop(0, "#4caf50");
-    gradient.addColorStop(
-      Math.max(0, Math.min(1, ((-6) - DB_MIN) / (-DB_MIN))),
-      "#4caf50",
-    );
-    gradient.addColorStop(
-      Math.max(0, Math.min(1, ((-3) - DB_MIN) / (-DB_MIN))),
-      "#ffeb3b",
-    );
+    gradient.addColorStop(dbToNorm(-6), "#4caf50");
+    gradient.addColorStop(dbToNorm(-3), "#ffeb3b");
+    gradient.addColorStop(dbToNorm(0), "#f44336");
     gradient.addColorStop(1, "#f44336");
     ctx.fillStyle = gradient;
     ctx.fillRect(0, peakY, barW, h - peakY);
@@ -363,6 +383,21 @@ export default class LevelMeterComponent extends Component {
     ctx.moveTo(0, holdY);
     ctx.lineTo(barW, holdY);
     ctx.stroke();
+
+    if (
+      state.clipped &&
+      Number.isFinite(state.sessionMaxSamplePeakDbFs) &&
+      state.sessionMaxSamplePeakDbFs > DB_CLIP_THRESHOLD
+    ) {
+      const clipY = dbToY(state.sessionMaxSamplePeakDbFs);
+      const headroomTop = dbToY(0);
+      const y = Math.min(clipY, headroomTop - 4 * dpr);
+      ctx.font = `${Math.max(7, 8 * dpr)}px monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillStyle = "#f44336";
+      ctx.fillText(formatDbFs(state.sessionMaxSamplePeakDbFs), barW / 2, y);
+    }
   }
 
   private _layoutScaleTicks() {
@@ -370,8 +405,7 @@ export default class LevelMeterComponent extends Component {
     if (!col) return;
     const ch = col.clientHeight;
     if (ch < 10) return;
-    const dbToPct = (db: number) =>
-      100 * (1 - Math.max(0, Math.min(1, (db - DB_MIN) / (DB_CLIP - DB_MIN))));
+    const dbToPct = (db: number) => 100 * (1 - dbToNorm(db));
     for (const el of col.querySelectorAll<HTMLElement>(".levelMeter__tick")) {
       const db = Number(el.dataset.db);
       const pct = dbToPct(db);

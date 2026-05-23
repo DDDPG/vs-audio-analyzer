@@ -83,7 +83,7 @@ how-to-use
 - **Drag** on a plot to select a range and re-run analysis on that range. Hold **Ctrl** for time-focused selection, **Shift** for value-focused selection.
 - **Right-click** to reset the visible range (with Ctrl / Shift variants for time-only or value-only reset).
 - Use the in-editor **Analyze** tab for precise numeric settings.
-- The **live spectrum** panel shows frequency / graticule dB / peak & RMS at the cursor in an overlay, with a **white crosshair** to the plot edges.
+- The **live spectrum** panel shows frequency / graticule dB / peak & RMS at the cursor in an overlay, with a **white crosshair** to the plot edges. **Peak hold** (seconds) optionally keeps each bin’s outline flat before applying the spectrum release slope.
 
 To open audio with this editor by default, set `workbench.editorAssociations` for your extensions (e.g. `*.wav`, `*.mp3`) to `wavPreview.audioPreview`.
 
@@ -135,13 +135,13 @@ Web assets are bundled to `dist/audioPreview.js`. Run `npm run test`, `npm run l
 
 ## TODO
 
-### Live meters (next major feature)
+### ~~Live meters (next major feature)~~
 
-1. **Playback tap** — branch the Web Audio graph so stereo output can feed analyser nodes during playback without affecting normal listening.
-2. **Stereo level meter** — classic L/R RMS / peak / hold / clip display in a slim column beside the existing waveform/spectrogram area.
-3. **Live spectrum** — real-time log-frequency spectrum updated each animation frame during playback, sharing the live-analysis column.
-4. **Goniometer** — phase / stereo goniometer (mid–side “X” display) with correlation readout, co-located with the live spectrum.
-5. **Layout & chrome** — extend the webview shell to host the above modules in resizable extra columns; support vertical split and fullscreen overlay; expose FFT size and toggle controls in the existing settings style.
+1. ~~**Playback tap** — branch the Web Audio graph so stereo output can feed analyser nodes during playback without affecting normal listening.~~
+2. ~~**Stereo level meter** — classic L/R RMS / peak / hold / clip display in a slim column beside the existing waveform/spectrogram area.~~
+3. ~~**Live spectrum** — real-time log-frequency spectrum updated each animation frame during playback, sharing the live-analysis column.~~
+4. ~~**Goniometer** — phase / stereo goniometer (mid–side “X” display) with correlation readout, co-located with the live spectrum.~~
+5. ~~**Layout & chrome** — extend the webview shell to host the above modules in resizable extra columns; support vertical split and fullscreen overlay; expose FFT size and toggle controls in the existing settings style.~~
 
 ### Live feature extractor
 
@@ -162,10 +162,12 @@ Web assets are bundled to `dist/audioPreview.js`. Run `npm run test`, `npm run l
 
 ### ETC
 
-1. True Peak
-2. Phase corr ADPTR version, insight version
-3. RMS LB(dB+3), RMS(dBA+3)
-4. freq-weighted wave form(minimeter)
-5. loudness meter positive dB
-6. inshght2-like meter
+1. ~~True Peak detect~~
+2. ~~live spec peak hold~~
+3. Phase corr ADPTR version, insight version
+  1. 沿着频率展开的phase corr表, metric ab的
+4. RMS LB(dB+3), RMS(dBA+3)
+5. freq-weighted wave form(minimeter)
+6. ~~loudness meter positive dB~~
+7. ~~inshght2-like meter~~
 

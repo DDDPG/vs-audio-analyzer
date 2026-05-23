@@ -2,6 +2,10 @@ import {
   encodeMidSideTimeDomain,
   spectrumTiltDb,
   spectrumTiltDbAboveFloor,
+  sanitizeMonitorBandEdges,
+  monitorBandSoloBypassActive,
+  monitoringGainsForMode,
+  applyMonitoringToTimeDomain,
 } from "./liveMonitoring";
 
 describe("spectrumTiltDb", () => {
@@ -38,5 +42,54 @@ describe("spectrumTiltDbAboveFloor", () => {
       spectrumTiltDb(2000, 3),
       5,
     );
+  });
+});
+
+describe("sanitizeMonitorBandEdges", () => {
+  test("fixes order and clamps toward Nyquist", () => {
+    const e = sanitizeMonitorBandEdges([900, 120, 20, 50, 30, 100000], 44100);
+    for (let i = 1; i < e.length; i++) {
+      expect(e[i]).toBeGreaterThan(e[i - 1]);
+    }
+    expect(e[e.length - 1]).toBeLessThanOrEqual(44100 / 2 + 50);
+  });
+});
+
+describe("monitorBandSoloBypassActive", () => {
+  test("full bandwidth when zero or all five bits lit", () => {
+    expect(monitorBandSoloBypassActive(0)).toBe(true);
+    expect(monitorBandSoloBypassActive(0b11111)).toBe(true);
+    expect(monitorBandSoloBypassActive(3)).toBe(false);
+  });
+});
+
+describe("monitoringGainsForMode", () => {
+  test('"swap" maps stereo taps to opposite outputs', () => {
+    const g = monitoringGainsForMode("swap");
+    expect(g.ll).toBeCloseTo(0);
+    expect(g.rr).toBeCloseTo(0);
+    expect(g.lr).toBeCloseTo(1);
+    expect(g.rl).toBeCloseTo(1);
+  });
+
+  test("known modes are stable", () => {
+    const modes = ["lr", "swap", "l", "r", "m", "s"] as const;
+    for (const m of modes) {
+      expect(monitoringGainsForMode(m)).toBeDefined();
+    }
+  });
+});
+
+describe("applyMonitoringToTimeDomain", () => {
+  test('"swap" mode swaps L/R taps like the headphone matrix', () => {
+    const L = new Float32Array([1, -0.25]);
+    const R = new Float32Array([-1, 4]);
+    const oL = new Float32Array(2);
+    const oR = new Float32Array(2);
+    applyMonitoringToTimeDomain("swap", L, R, oL, oR);
+    expect(oL[0]).toBeCloseTo(-1);
+    expect(oR[0]).toBeCloseTo(1);
+    expect(oL[1]).toBeCloseTo(4);
+    expect(oR[1]).toBeCloseTo(-0.25);
   });
 });

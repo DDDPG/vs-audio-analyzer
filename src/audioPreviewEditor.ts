@@ -191,7 +191,18 @@ export class AudioPreviewEditorProvider
   ) {
     switch (msg.type) {
       case WebviewMessageType.CONFIG: {
-        const data = this.buildWebviewConfig(document);
+        const data = {
+          ...this.buildWebviewConfig(document),
+          loudnessWorkletUri: webviewPanel.webview
+            .asWebviewUri(
+              vscode.Uri.joinPath(
+                this._context.extensionUri,
+                "dist",
+                "loudness.worklet.js",
+              ),
+            )
+            .toString(),
+        };
         this.postMessage(webviewPanel.webview, {
           type: ExtMessageType.CONFIG,
           data,
@@ -285,7 +296,7 @@ export class AudioPreviewEditorProvider
             <head>
                 <meta charset="UTF-8">
                 
-                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} blob:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'wasm-unsafe-eval' 'nonce-${nonce}'; worker-src ${webview.cspSource} blob:; connect-src data: ${webview.cspSource} https://*.vscode-cdn.net;">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} blob:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'wasm-unsafe-eval' 'nonce-${nonce}' blob: ${webview.cspSource}; worker-src ${webview.cspSource} blob:; connect-src data: ${webview.cspSource} https://*.vscode-cdn.net;">
                 
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 

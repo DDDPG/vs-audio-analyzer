@@ -3,6 +3,25 @@ import { AnalyzeDefault } from "../../config";
 import { getRangeValues, getValueInEnum, getValueInRange } from "../../util";
 import Service from "../service";
 import type { LiveMonitoringMode } from "../utils/liveMonitoring";
+import {
+  MONITOR_BAND_COUNT,
+  MONITOR_BAND_MASK_ALL,
+  monitorBandSoloBypassActive,
+  sanitizeMonitorBandEdges,
+} from "../utils/liveMonitoring";
+import {
+  clampLiveSpectrumPeakHoldSec,
+  clampReleaseDbPerSec,
+  LIVE_RELEASE_DBPS_DEFAULT,
+  LIVE_RELEASE_DBPS_MAX,
+  LIVE_RELEASE_DBPS_MIN,
+  migrateSmoothingPctToReleaseDbPerSec,
+  resolveReleaseDbPerSec,
+} from "../utils/liveBallistics";
+import {
+  clampPolarSampleFillBrightnessPct,
+  clampPolarSampleRadiusGamma,
+} from "../utils/stereoPolarField";
 
 export enum WindowSizeIndex {
   W256 = 0,
@@ -153,6 +172,12 @@ export default class AnalyzeSettingsService extends Service {
   }
 
   private _sampleRate: number;
+
+  /** Decoded clip sample rate (Hz). Used for Nyquist clamps in monitor band edges. */
+  public get sampleRate(): number {
+    return this._sampleRate;
+  }
+
   private _duration: number;
 
   private _minAmplitudeOfAudioBuffer: number;
@@ -621,20 +646,174 @@ export default class AnalyzeSettingsService extends Service {
 
   private static readonly LIVE_TILT_VALUES = [0, 1.5, 3, 4.5, 6] as const;
 
-  private _liveVisualSmoothingPct: number = 35;
-  public get liveVisualSmoothingPct(): number {
-    return this._liveVisualSmoothingPct;
+  private static _releaseToLegacyPct(releaseDbPerSec: number): number {
+    const t =
+      Math.log(releaseDbPerSec / LIVE_RELEASE_DBPS_MAX) /
+      Math.log(LIVE_RELEASE_DBPS_MIN / LIVE_RELEASE_DBPS_MAX);
+    return Math.round(Math.max(0, Math.min(100, 100 * t)));
   }
-  public set liveVisualSmoothingPct(value: number) {
-    this._liveVisualSmoothingPct = getValueInRange(
+
+  private _liveSpectrumReleaseDbPerSec: number = LIVE_RELEASE_DBPS_DEFAULT;
+  public get liveSpectrumReleaseDbPerSec(): number {
+    return this._liveSpectrumReleaseDbPerSec;
+  }
+  public set liveSpectrumReleaseDbPerSec(value: number) {
+    this._liveSpectrumReleaseDbPerSec = clampReleaseDbPerSec(value);
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_SPECTRUM_SMOOTHING, {
+        detail: { value: this._liveSpectrumReleaseDbPerSec },
+      }),
+    );
+  }
+
+  private _liveSpectrumPeakHoldSec: number = 0;
+  public get liveSpectrumPeakHoldSec(): number {
+    return this._liveSpectrumPeakHoldSec;
+  }
+  public set liveSpectrumPeakHoldSec(value: number) {
+    this._liveSpectrumPeakHoldSec = clampLiveSpectrumPeakHoldSec(value);
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_SPECTRUM_PEAK_HOLD, {
+        detail: { value: this._liveSpectrumPeakHoldSec },
+      }),
+    );
+  }
+
+  private _livePolarFieldReleaseDbPerSec: number = LIVE_RELEASE_DBPS_DEFAULT;
+  public get livePolarFieldReleaseDbPerSec(): number {
+    return this._livePolarFieldReleaseDbPerSec;
+  }
+  public set livePolarFieldReleaseDbPerSec(value: number) {
+    this._livePolarFieldReleaseDbPerSec = clampReleaseDbPerSec(value);
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_POLAR_FIELD_SMOOTHING, {
+        detail: { value: this._livePolarFieldReleaseDbPerSec },
+      }),
+    );
+  }
+
+  private _liveLevelMeterReleaseDbPerSec: number = LIVE_RELEASE_DBPS_DEFAULT;
+  public get liveLevelMeterReleaseDbPerSec(): number {
+    return this._liveLevelMeterReleaseDbPerSec;
+  }
+  public set liveLevelMeterReleaseDbPerSec(value: number) {
+    this._liveLevelMeterReleaseDbPerSec = clampReleaseDbPerSec(value);
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_LEVEL_METER_SMOOTHING, {
+        detail: { value: this._liveLevelMeterReleaseDbPerSec },
+      }),
+    );
+  }
+
+  private _livePolarLevelGatePct: number = 28;
+  public get livePolarLevelGatePct(): number {
+    return this._livePolarLevelGatePct;
+  }
+  public set livePolarLevelGatePct(value: number) {
+    this._livePolarLevelGatePct = getValueInRange(
       Math.round(Number(value)),
       0,
       100,
-      35,
+      28,
     );
     this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_POLAR_LEVEL_GATE, {
+        detail: { value: this._livePolarLevelGatePct },
+      }),
+    );
+  }
+
+  private _livePolarSampleRadiusGamma: number = 1;
+  public get livePolarSampleRadiusGamma(): number {
+    return this._livePolarSampleRadiusGamma;
+  }
+  public set livePolarSampleRadiusGamma(value: number) {
+    this._livePolarSampleRadiusGamma = clampPolarSampleRadiusGamma(value);
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_POLAR_SAMPLE_RADIUS_GAMMA, {
+        detail: { value: this._livePolarSampleRadiusGamma },
+      }),
+    );
+  }
+
+  private _livePolarSampleFillBrightnessPct: number = 10;
+  public get livePolarSampleFillBrightnessPct(): number {
+    return this._livePolarSampleFillBrightnessPct;
+  }
+  public set livePolarSampleFillBrightnessPct(value: number) {
+    this._livePolarSampleFillBrightnessPct =
+      clampPolarSampleFillBrightnessPct(value);
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_POLAR_SAMPLE_FILL_BRIGHTNESS, {
+        detail: { value: this._livePolarSampleFillBrightnessPct },
+      }),
+    );
+  }
+
+  /** @deprecated Use {@link liveSpectrumReleaseDbPerSec} */
+  public get liveSpectrumSmoothingPct(): number {
+    return AnalyzeSettingsService._releaseToLegacyPct(
+      this._liveSpectrumReleaseDbPerSec,
+    );
+  }
+  /** @deprecated Use {@link liveSpectrumReleaseDbPerSec} */
+  public set liveSpectrumSmoothingPct(value: number) {
+    this.liveSpectrumReleaseDbPerSec =
+      migrateSmoothingPctToReleaseDbPerSec(value);
+  }
+
+  /** @deprecated Use {@link livePolarFieldReleaseDbPerSec} */
+  public get livePolarFieldSmoothingPct(): number {
+    return AnalyzeSettingsService._releaseToLegacyPct(
+      this._livePolarFieldReleaseDbPerSec,
+    );
+  }
+  /** @deprecated Use {@link livePolarFieldReleaseDbPerSec} */
+  public set livePolarFieldSmoothingPct(value: number) {
+    this.livePolarFieldReleaseDbPerSec =
+      migrateSmoothingPctToReleaseDbPerSec(value);
+  }
+
+  /** @deprecated Use {@link liveLevelMeterReleaseDbPerSec} */
+  public get liveLevelMeterSmoothingPct(): number {
+    return AnalyzeSettingsService._releaseToLegacyPct(
+      this._liveLevelMeterReleaseDbPerSec,
+    );
+  }
+  /** @deprecated Use {@link liveLevelMeterReleaseDbPerSec} */
+  public set liveLevelMeterSmoothingPct(value: number) {
+    this.liveLevelMeterReleaseDbPerSec =
+      migrateSmoothingPctToReleaseDbPerSec(value);
+  }
+
+  /** @deprecated Use {@link liveSpectrumReleaseDbPerSec} */
+  public get liveVisualSmoothingPct(): number {
+    return this.liveSpectrumSmoothingPct;
+  }
+  /** @deprecated Use {@link liveSpectrumReleaseDbPerSec} */
+  public set liveVisualSmoothingPct(value: number) {
+    this.liveSpectrumReleaseDbPerSec =
+      migrateSmoothingPctToReleaseDbPerSec(value);
+    this.dispatchEvent(
       new CustomEvent(EventType.AS_UPDATE_LIVE_VISUAL_SMOOTHING, {
-        detail: { value: this._liveVisualSmoothingPct },
+        detail: { value: this._liveSpectrumReleaseDbPerSec },
+      }),
+    );
+  }
+
+  private _liveSoundFieldMode: "polarSample" | "polarLevel" | "lissajous" =
+    "polarLevel";
+  public get liveSoundFieldMode(): "polarSample" | "polarLevel" | "lissajous" {
+    return this._liveSoundFieldMode;
+  }
+  public set liveSoundFieldMode(
+    value: "polarSample" | "polarLevel" | "lissajous",
+  ) {
+    const allowed = ["polarSample", "polarLevel", "lissajous"] as const;
+    this._liveSoundFieldMode = allowed.includes(value) ? value : "polarLevel";
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_LIVE_SOUND_FIELD_MODE, {
+        detail: { value: this._liveSoundFieldMode },
       }),
     );
   }
@@ -664,13 +843,98 @@ export default class AnalyzeSettingsService extends Service {
   }
   public set liveMonitoringMode(value: LiveMonitoringMode) {
     const v = String(value).toLowerCase();
-    const allowed = ["lr", "l", "r", "m", "s"];
+    const allowed = ["lr", "swap", "l", "r", "m", "s"];
     this._liveMonitoringMode = (allowed.includes(v) ? v : "lr") as LiveMonitoringMode;
     this.dispatchEvent(
       new CustomEvent(EventType.AS_UPDATE_LIVE_MONITORING_MODE, {
         detail: { value: this._liveMonitoringMode },
       }),
     );
+  }
+
+  /** Six ascending Hz edges `[e0…e5]` defining five bands `[eᵢ,eᵢ₊₁]`. */
+  private _monitorBandEdgesHz: number[] = [
+    20, 60, 240, 900, 5000, 24000,
+  ];
+  private _monitorBandSoloMask: number = 0;
+
+  /** When true, monitor band solo is inactive (mask 0 or all five bits). */
+  public monitorBandBypassActive(): boolean {
+    return monitorBandSoloBypassActive(this._monitorBandSoloMask);
+  }
+
+  public get monitorBandEdgesHz(): readonly number[] {
+    return this._monitorBandEdgesHz;
+  }
+
+  public set monitorBandEdgesHz(value: readonly number[]) {
+    const next = sanitizeMonitorBandEdges(value, this._sampleRate);
+    if (this._edgesEqual(this._monitorBandEdgesHz, next)) {
+      return;
+    }
+    this._monitorBandEdgesHz = next;
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_MONITOR_BAND_EDGES, {
+        detail: { value: [...this._monitorBandEdgesHz] },
+      }),
+    );
+  }
+
+  public get monitorBandSoloMask(): number {
+    return this._monitorBandSoloMask & MONITOR_BAND_MASK_ALL;
+  }
+
+  public set monitorBandSoloMask(value: number) {
+    const next = Math.max(0, Math.min(MONITOR_BAND_MASK_ALL, Math.trunc(value)));
+    if (next === this._monitorBandSoloMask) {
+      return;
+    }
+    this._monitorBandSoloMask = next;
+    this.dispatchEvent(
+      new CustomEvent(EventType.AS_UPDATE_MONITOR_BAND_SOLO_MASK, {
+        detail: { value: this.monitorBandSoloMask },
+      }),
+    );
+  }
+
+  public toggleMonitorBandSolo(bandIndex: number): void {
+    if (bandIndex < 0 || bandIndex >= MONITOR_BAND_COUNT) {
+      return;
+    }
+    this.monitorBandSoloMask = this._monitorBandSoloMask ^ (1 << bandIndex);
+  }
+
+  public resetMonitorBandSolo(): void {
+    this.monitorBandSoloMask = 0;
+  }
+
+  /**
+   * Load monitor band prefs without dispatch (used by `fromDefaultSetting` /
+   * workspace cache hydrate).
+   */
+  public applyMonitorBandsSnapshot(
+    edges?: readonly number[],
+    soloMask?: number,
+  ): void {
+    this._monitorBandEdgesHz = sanitizeMonitorBandEdges(edges, this._sampleRate);
+    if (soloMask !== undefined && Number.isFinite(soloMask)) {
+      this._monitorBandSoloMask = Math.max(
+        0,
+        Math.min(MONITOR_BAND_MASK_ALL, Math.trunc(Number(soloMask))),
+      );
+    }
+  }
+
+  private _edgesEqual(a: readonly number[], b: readonly number[]): boolean {
+    if (a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (Math.abs(a[i] - b[i]) > 1e-6) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private _melFilterNum: number;
@@ -859,9 +1123,36 @@ export default class AnalyzeSettingsService extends Service {
       setting.liveAnalysisFftSize = defaultSetting.liveAnalysisFftSize;
     }
 
-    if (defaultSetting.liveAnalysisVisualSmoothingPct !== undefined) {
-      setting.liveVisualSmoothingPct =
-        defaultSetting.liveAnalysisVisualSmoothingPct;
+    const legacySmooth = defaultSetting.liveAnalysisVisualSmoothingPct;
+    setting.liveSpectrumReleaseDbPerSec = resolveReleaseDbPerSec(
+      defaultSetting.liveSpectrumReleaseDbPerSec,
+      defaultSetting.liveSpectrumSmoothingPct ?? legacySmooth,
+    );
+    setting.liveSpectrumPeakHoldSec = clampLiveSpectrumPeakHoldSec(
+      defaultSetting.liveSpectrumPeakHoldSec ?? 0,
+    );
+    setting.livePolarFieldReleaseDbPerSec = resolveReleaseDbPerSec(
+      defaultSetting.livePolarFieldReleaseDbPerSec,
+      defaultSetting.livePolarFieldSmoothingPct ?? legacySmooth,
+    );
+    setting.liveLevelMeterReleaseDbPerSec = resolveReleaseDbPerSec(
+      defaultSetting.liveLevelMeterReleaseDbPerSec,
+      defaultSetting.liveLevelMeterSmoothingPct ?? legacySmooth,
+    );
+    setting.livePolarLevelGatePct = getValueInRange(
+      Math.round(Number(defaultSetting.livePolarLevelGatePct ?? 28)),
+      0,
+      100,
+      28,
+    );
+    setting.livePolarSampleRadiusGamma = clampPolarSampleRadiusGamma(
+      defaultSetting.livePolarSampleRadiusGamma ?? 1,
+    );
+    setting.livePolarSampleFillBrightnessPct = clampPolarSampleFillBrightnessPct(
+      defaultSetting.livePolarSampleFillBrightnessPct ?? 10,
+    );
+    if (defaultSetting.liveSoundFieldMode !== undefined) {
+      setting.liveSoundFieldMode = defaultSetting.liveSoundFieldMode;
     }
     if (defaultSetting.liveSpectrumTiltDbPerOct !== undefined) {
       setting.liveSpectrumTiltDbPerOct =
@@ -870,6 +1161,18 @@ export default class AnalyzeSettingsService extends Service {
     if (defaultSetting.liveMonitoringMode !== undefined) {
       setting.liveMonitoringMode = defaultSetting.liveMonitoringMode;
     }
+    /** Legacy pref: combined into {@link LiveMonitoringMode} `"swap"`. */
+    if (
+      defaultSetting.monitorStereoSwap === true &&
+      setting.liveMonitoringMode === "lr"
+    ) {
+      setting.liveMonitoringMode = "swap";
+    }
+
+    setting.applyMonitorBandsSnapshot(
+      defaultSetting.monitorBandEdgesHz,
+      defaultSetting.monitorBandSoloMask,
+    );
 
     return setting;
   }
@@ -996,9 +1299,19 @@ export default class AnalyzeSettingsService extends Service {
       showLevelMeter: this.showLevelMeter,
       showLiveAnalysis: this.showLiveAnalysis,
       liveAnalysisFftSize: this.liveAnalysisFftSize,
-      liveAnalysisVisualSmoothingPct: this.liveVisualSmoothingPct,
+      liveAnalysisVisualSmoothingPct: this.liveSpectrumSmoothingPct,
+      liveSpectrumReleaseDbPerSec: this.liveSpectrumReleaseDbPerSec,
+      liveSpectrumPeakHoldSec: this.liveSpectrumPeakHoldSec,
+      livePolarFieldReleaseDbPerSec: this.livePolarFieldReleaseDbPerSec,
+      liveLevelMeterReleaseDbPerSec: this.liveLevelMeterReleaseDbPerSec,
+      livePolarLevelGatePct: this.livePolarLevelGatePct,
+      livePolarSampleRadiusGamma: this.livePolarSampleRadiusGamma,
+      livePolarSampleFillBrightnessPct: this.livePolarSampleFillBrightnessPct,
+      liveSoundFieldMode: this.liveSoundFieldMode,
       liveSpectrumTiltDbPerOct: this.liveSpectrumTiltDbPerOct,
       liveMonitoringMode: this.liveMonitoringMode,
+      monitorBandEdgesHz: [...this._monitorBandEdgesHz],
+      monitorBandSoloMask: this._monitorBandSoloMask,
     };
   }
 

@@ -1,6 +1,37 @@
 "use strict";
+const fs = require("fs");
 const path = require("path");
 const webpack = require("webpack");
+
+/** Extract loudness-worklet processor source to dist/loudness.worklet.js (CSP-safe). */
+class ExtractLoudnessWorkletPlugin {
+  apply(compiler) {
+    compiler.hooks.beforeRun.tap("ExtractLoudnessWorkletPlugin", () => {
+      const srcPath = path.join(
+        __dirname,
+        "node_modules/loudness-worklet/packages/lib/dist/index.js",
+      );
+      if (!fs.existsSync(srcPath)) {
+        return;
+      }
+      const src = fs.readFileSync(srcPath, "utf8");
+      const startMarker = "const i = `";
+      const endMarker = '`, t = "loudness-processor"';
+      const start = src.indexOf(startMarker);
+      const end = src.indexOf(endMarker, start);
+      if (start < 0 || end < 0) {
+        console.warn(
+          "[ExtractLoudnessWorkletPlugin] Could not parse loudness-worklet bundle",
+        );
+        return;
+      }
+      const body = src.slice(start + startMarker.length, end);
+      const outPath = path.join(__dirname, "dist/loudness.worklet.js");
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, body, "utf8");
+    });
+  }
+}
 
 const extensionConfig = {
   target: "node", // vscode extensions run in a Node.js-context 📖 -> https://webpack.js.org/configuration/node/
@@ -74,7 +105,15 @@ const webviewConfig = {
       },
       {
         test: /\.wasm$/,
-        type: "asset/resource",
+        oneOf: [
+          {
+            include: /node_modules[\\/]ebur128-wasm/,
+            type: "webassembly/async",
+          },
+          {
+            type: "asset/resource",
+          },
+        ],
       },
     ],
   },
@@ -85,6 +124,7 @@ const webviewConfig = {
     new webpack.ProvidePlugin({
       process: "process/browser", // provide a shim for the global `process` variable
     }),
+    new ExtractLoudnessWorkletPlugin(),
   ],
 };
 

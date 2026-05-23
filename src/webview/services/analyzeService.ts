@@ -560,6 +560,24 @@ export default class AnalyzeService extends Service {
     return 700 * (Math.pow(10, mel / 2595) - 1);
   }
 
+  /** Window bounds for cursor readout / true-peak (same as {@link windowRmsPeak}). */
+  public static windowBounds(
+    dataLength: number,
+    centerSample: number,
+    windowSamples: number,
+  ): { start: number; end: number } {
+    const n = dataLength;
+    if (n < 1 || windowSamples < 1) {
+      return { start: 0, end: 0 };
+    }
+    const take = Math.min(windowSamples, n);
+    const half = Math.floor(take / 2);
+    let start = Math.min(Math.max(0, centerSample - half), n - take);
+    let end = Math.min(n, start + take);
+    start = Math.max(0, end - take);
+    return { start, end };
+  }
+
   /** RMS and peak of `data` over `windowSamples` centered at `centerSample` (clamped to buffer). */
   public static windowRmsPeak(
     data: Float32Array,
@@ -570,11 +588,11 @@ export default class AnalyzeService extends Service {
     if (n < 1 || windowSamples < 1) {
       return { rms: 0, peak: 0 };
     }
-    const take = Math.min(windowSamples, n);
-    const half = Math.floor(take / 2);
-    let start = Math.min(Math.max(0, centerSample - half), n - take);
-    let end = Math.min(n, start + take);
-    start = Math.max(0, end - take);
+    const { start, end } = AnalyzeService.windowBounds(
+      n,
+      centerSample,
+      windowSamples,
+    );
     let sumSq = 0;
     let peak = 0;
     const span = end - start;

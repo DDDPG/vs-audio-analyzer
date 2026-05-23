@@ -53,13 +53,29 @@ export default class InfoTableComponent extends Component {
     );
   }
 
-  private insertTableData(name: string, value: string) {
+  /** Insert or update a row by field name (e.g. async loudness summary). */
+  public setField(name: string, label: string, value: string) {
+    const existing = this._infoTable.querySelector(
+      `.js-infoTableData-${name}`,
+    ) as HTMLTableCellElement | null;
+    if (existing) {
+      existing.textContent = value;
+      const labelTd = existing.previousElementSibling as HTMLTableCellElement;
+      if (labelTd) {
+        labelTd.textContent = label;
+      }
+      return;
+    }
+    this.insertTableData(name, value, label);
+  }
+
+  private insertTableData(name: string, value: string, label?: string) {
     const tr = document.createElement("tr");
     tr.classList.add("infoTableRow");
 
     const nameTd = document.createElement("td");
     nameTd.classList.add("infoTableData");
-    nameTd.textContent = name;
+    nameTd.textContent = label ?? name;
     tr.appendChild(nameTd);
 
     const valueTd = document.createElement("td");

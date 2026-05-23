@@ -1,0 +1,221 @@
+/* Host wraps inline chart + fullscreen overlay (see loudnessComponent.ts). */
+.loudnessHost {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: min(17vh, 224px);
+  position: relative;
+  overflow: hidden;
+}
+
+.loudnessHost__inline {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.loudnessHost__expandBtn {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 6;
+  margin: 0;
+  padding: 0 5px;
+  min-width: 24px;
+  min-height: 22px;
+  line-height: 1;
+  border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, rgba(0, 0, 0, 0.55));
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.loudnessHost__expandBtn:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground) 70%, transparent);
+}
+
+.loudnessHost__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  background: var(--vscode-editor-background, #1e1e1e);
+  padding: 4px;
+  box-sizing: border-box;
+}
+
+.loudnessHost__overlay.hidden {
+  display: none !important;
+}
+
+.loudnessHost__overlay > .js-loudnessOverlayMount {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.loudnessComponent {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: var(--vscode-editor-background, #1e1e1e);
+}
+
+.loudnessComponent--fullscreenMount {
+  min-height: 100%;
+}
+
+.loudnessComponent--inlineMount {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.loudnessComponent__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border, #444);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  color: var(--vscode-foreground);
+}
+
+.loudnessComponent__metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.loudnessComponent__metricLabel {
+  color: var(--vscode-descriptionForeground);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 9px;
+}
+
+.loudnessComponent__metricValue {
+  font-variant-numeric: tabular-nums;
+}
+
+.loudnessComponent__status {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.loudnessComponent__canvasWrap {
+  flex: 1 1 auto;
+  min-height: 84px;
+  position: relative;
+  overflow: hidden;
+}
+
+.loudnessComponent__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.loudnessComponent__legend {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  pointer-events: none;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.65);
+  text-align: right;
+  line-height: 1.4;
+}
+
+.loudnessComponent__legendLine {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.loudnessComponent__legendLine--short {
+  background: rgba(0, 180, 216, 0.95);
+}
+
+.loudnessComponent__legendLine--momentary {
+  background: rgba(255, 214, 64, 0.95);
+  height: 1px;
+}
+
+.loudnessComponent__legendLine--integrated {
+  background: rgba(244, 67, 54, 0.45);
+  height: 1px;
+}
+
+.loudnessComponent__legendLine--tp {
+  background: rgba(244, 67, 54, 0.85);
+  width: 2px;
+  height: 10px;
+}
+
+.loudnessComponent__hoverLine {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.45);
+  pointer-events: none;
+  z-index: 3;
+  display: none;
+}
+
+.loudnessComponent__hoverReadout {
+  position: fixed;
+  z-index: 4;
+  pointer-events: none;
+  visibility: hidden;
+  max-width: calc(100vw - 16px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 4px;
+  border-radius: 2px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(0, 0, 0, 0.45);
+  text-shadow:
+    0 0 3px rgba(0, 0, 0, 0.95),
+    0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.loudnessComponent__selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: none;
+  pointer-events: none;
+  z-index: 2;
+  border-left: 1px solid rgba(255, 0, 0, 0.85);
+  border-right: 1px solid rgba(255, 0, 0, 0.85);
+  background: rgba(255, 0, 0, 0.08);
+}
+
+.loudnessComponent__playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+  z-index: 3;
+  display: none;
+}

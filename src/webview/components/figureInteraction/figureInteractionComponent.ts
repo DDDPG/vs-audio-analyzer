@@ -12,6 +12,7 @@ import {
   piecewiseYNormToHz,
 } from "../../spectrogramFrequencyLayout";
 import Component from "../../component";
+import LoudnessService, { formatDbTp } from "../../services/loudnessService";
 
 export default class FigureInteractionComponent extends Component {
   private selectionDiv: HTMLDivElement | null = null;
@@ -32,6 +33,7 @@ export default class FigureInteractionComponent extends Component {
     audioBuffer: AudioBuffer,
     settings: AnalyzeSettingsProps,
     channelIndex: number,
+    loudnessService?: LoudnessService,
   ) {
     super();
     const componentRoot = document.querySelector(componentRootSelector);
@@ -141,6 +143,12 @@ export default class FigureInteractionComponent extends Component {
         ? `${sec.toFixed(3)} s`
         : `${(sec * 1000).toFixed(2)} ms`;
     };
+    const fmtTp = (db: number | undefined) => {
+      if (db === undefined || !Number.isFinite(db)) {
+        return "—";
+      }
+      return formatDbTp(db);
+    };
     const fmtHz = (hz: number) => {
       if (!Number.isFinite(hz)) {
         return "—";
@@ -167,11 +175,21 @@ export default class FigureInteractionComponent extends Component {
       readoutEl.style.visibility = "visible";
       const w = fmtRmsWindow(d.rmsWindowDurationSec);
       const winHtml = w ? `<br><span class="figureHoverReadout__meta">win ${w}</span>` : "";
+      const tpHtml =
+        d.truePeakDbTp !== undefined
+          ? `<br>TP ${fmtTp(d.truePeakDbTp)}`
+          : "";
       if (d.kind === "waveform") {
-        readoutEl.innerHTML = `Ch ${channelIndex + 1}<br>RMS ${fmtLin(d.rms)}<br>Peak ${fmtLin(d.peak)}${winHtml}`;
+        readoutEl.innerHTML = `Ch ${channelIndex + 1}<br>RMS ${fmtLin(d.rms)}<br>Peak ${fmtLin(d.peak)}${tpHtml}${winHtml}`;
       } else {
-        readoutEl.innerHTML = `Ch ${channelIndex + 1}<br>RMS ${fmtDbfs(d.rms)}<br>Peak ${fmtDbfs(d.peak)}<br>${fmtHz(d.frequencyHz)}${winHtml}`;
+        readoutEl.innerHTML = `Ch ${channelIndex + 1}<br>RMS ${fmtDbfs(d.rms)}<br>Peak ${fmtDbfs(d.peak)}<br>${fmtHz(d.frequencyHz)}${tpHtml}${winHtml}`;
       }
+      readoutEl.style.position = "fixed";
+      readoutEl.style.left = `${Math.min(
+        lastClientX + 12,
+        window.innerWidth - readoutEl.offsetWidth - 8,
+      )}px`;
+      readoutEl.style.top = `${Math.max(4, lastClientY - readoutEl.offsetHeight - 10)}px`;
       if (crossV && crossH) {
         crossV.style.display = "block";
         crossH.style.display = "block";
@@ -215,6 +233,27 @@ export default class FigureInteractionComponent extends Component {
       const chData = audioBuffer.getChannelData(channelIndex);
       const { rms, peak } = AnalyzeService.windowRmsPeak(chData, center, win);
       const rmsWindowDurationSec = win / sr;
+      let truePeakDbTp: number | undefined;
+      if (loudnessService) {
+        const { start, end } = AnalyzeService.windowBounds(
+          chData.length,
+          center,
+          win,
+        );
+        const leftSlice = audioBuffer.getChannelData(0).subarray(start, end);
+        const rightSlice =
+          audioBuffer.numberOfChannels >= 2
+            ? audioBuffer.getChannelData(1).subarray(start, end)
+            : null;
+        try {
+          const tp = loudnessService.truePeakWindow(leftSlice, rightSlice, sr);
+          if (Number.isFinite(tp.max)) {
+            truePeakDbTp = tp.max;
+          }
+        } catch {
+          truePeakDbTp = undefined;
+        }
+      }
       let detail: CursorReadoutPayload;
       if (onWaveformCanvas) {
         detail = {
@@ -223,6 +262,7 @@ export default class FigureInteractionComponent extends Component {
           rms,
           peak,
           rmsWindowDurationSec,
+          truePeakDbTp,
         };
       } else {
         const hz = AnalyzeService.spectrogramCursorYToHz(
@@ -239,6 +279,7 @@ export default class FigureInteractionComponent extends Component {
           peak,
           frequencyHz: hz,
           rmsWindowDurationSec,
+          truePeakDbTp,
         };
       }
       applyLocalHoverUi(detail, xn, yn);
